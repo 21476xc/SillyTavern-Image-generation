@@ -2,28 +2,122 @@
  * ST-Custom-ImageGen
  * 自定义生图 (OpenAI 兼容)
  * 纯浏览器 ES Module，无打包依赖。
+ *
+ * 注意：不在顶层静态 import ST 核心模块，避免任一命名导出变化导致整扩展加载失败、
+ * 扩展设置面板完全不出现。改为动态 import + window 回退。
  */
-
-import {
-    getContext as stGetContext,
-    extension_settings,
-    saveSettingsDebounced,
-} from '../../../extensions.js';
-
-import {
-    eventSource,
-    event_types,
-    saveChatConditional,
-    saveChatDebounced,
-    messageFormatting,
-    reloadCurrentChat,
-    setExtensionPrompt,
-    extension_prompt_types,
-    extension_prompt_roles,
-} from '../../../../script.js';
 
 const MODULE_NAME = 'st-custom-imagegen';
 const DISPLAY_NAME = '自定义生图 (OpenAI 兼容)';
+
+/** @type {any} */
+let stGetContext = null;
+/** @type {any} */
+let extension_settings = {};
+/** @type {any} */
+let saveSettingsDebounced = null;
+/** @type {any} */
+let eventSource = null;
+/** @type {any} */
+let event_types = {};
+/** @type {any} */
+let saveChatConditional = null;
+/** @type {any} */
+let saveChatDebounced = null;
+/** @type {any} */
+let messageFormatting = null;
+/** @type {any} */
+let reloadCurrentChat = null;
+/** @type {any} */
+let setExtensionPrompt = null;
+/** @type {any} */
+let extension_prompt_types = null;
+/** @type {any} */
+let extension_prompt_roles = null;
+
+function getExtensionBasePath() {
+    try {
+        if (typeof import.meta !== 'undefined' && import.meta.url) {
+            return String(import.meta.url).replace(/[^/\\]+$/, '');
+        }
+    } catch (_) { /* ignore */ }
+    try {
+        const scripts = Array.from(document.getElementsByTagName('script'));
+        for (const s of scripts) {
+            const src = s.src || '';
+            if (/third-party/i.test(src) && /index\.js/i.test(src) && /imagegen|st-custom-imagegen|ST-Custom-ImageGen/i.test(src)) {
+                return src.replace(/index\.js(?:\?.*)?$/i, '');
+            }
+        }
+    } catch (_) { /* ignore */ }
+    return '/scripts/extensions/third-party/ST-Custom-ImageGen/';
+}
+
+async function loadSillyTavernApis() {
+    const extCandidates = [
+        new URL('../../../extensions.js', import.meta.url).href,
+        '/scripts/extensions.js',
+        '../../../extensions.js',
+    ];
+    const scriptCandidates = [
+        new URL('../../../../script.js', import.meta.url).href,
+        '/script.js',
+        '../../../../script.js',
+    ];
+
+    let extMod = null;
+    let scriptMod = null;
+    const errors = [];
+
+    for (const url of extCandidates) {
+        try {
+            extMod = await import(url);
+            break;
+        } catch (err) {
+            errors.push(`extensions:${url}:${err?.message || err}`);
+        }
+    }
+    for (const url of scriptCandidates) {
+        try {
+            scriptMod = await import(url);
+            break;
+        } catch (err) {
+            errors.push(`script:${url}:${err?.message || err}`);
+        }
+    }
+
+    stGetContext = extMod?.getContext || window.getContext || null;
+    extension_settings = extMod?.extension_settings || window.extension_settings || {};
+    saveSettingsDebounced = extMod?.saveSettingsDebounced || window.saveSettingsDebounced || null;
+
+    eventSource = scriptMod?.eventSource || window.eventSource || null;
+    event_types = scriptMod?.event_types || window.event_types || {};
+    saveChatConditional = scriptMod?.saveChatConditional || window.saveChatConditional || null;
+    saveChatDebounced = scriptMod?.saveChatDebounced || window.saveChatDebounced || null;
+    messageFormatting = scriptMod?.messageFormatting || window.messageFormatting || null;
+    reloadCurrentChat = scriptMod?.reloadCurrentChat || window.reloadCurrentChat || null;
+    setExtensionPrompt = scriptMod?.setExtensionPrompt || window.setExtensionPrompt || null;
+    extension_prompt_types = scriptMod?.extension_prompt_types || window.extension_prompt_types || null;
+    extension_prompt_roles = scriptMod?.extension_prompt_roles || window.extension_prompt_roles || null;
+
+    if (!extMod && !scriptMod) {
+        console.warn(`[${MODULE_NAME}] ST API import failed, using window fallbacks only`, errors);
+    } else if (errors.length) {
+        console.log(`[${MODULE_NAME}] partial ST API import`, errors);
+    }
+
+    // Ensure settings bucket object exists
+    try {
+        if (!window.extension_settings || typeof window.extension_settings !== 'object') {
+            window.extension_settings = extension_settings || {};
+        }
+        if (extension_settings !== window.extension_settings && window.extension_settings) {
+            extension_settings = window.extension_settings;
+        }
+    } catch (_) { /* ignore */ }
+
+    return { extMod, scriptMod, errors };
+}
 const IMAGE_PROMPT_RE = /<image_prompt>\s*([\s\S]*?)\s*<\/image_prompt>/i;
 const IMAGE_PROMPT_GLOBAL_RE = /<image_prompt>\s*[\s\S]*?\s*<\/image_prompt>/gi;
 
@@ -525,47 +619,106 @@ function buildSettingsHtml() {
 </div>`.trim();
 }
 
-function injectSettingsPanel() {
-    if ($('stcig_settings')) return;
-
-    const html = buildSettingsHtml();
+function findSettingsHost() {
     const containerCandidates = [
         '#extensions_settings2',
         '#extensions_settings',
-        '#rm_extensions_block',
+        '#extensions_settings2 .extensions_block',
         '#extensions_settings .extensions_block',
+        '#rm_extensions_block',
+        '#rm_extensions_block .extensions_block',
+        '#extensions_settings .inline-drawer-content',
+        '#top-settings-holder',
     ];
-
-    let host = null;
     for (const sel of containerCandidates) {
-        host = document.querySelector(sel);
-        if (host) break;
+        const host = document.querySelector(sel);
+        if (host) return host;
     }
-    if (!host) {
-        host = document.createElement('div');
-        host.id = 'stcig_fallback_host';
-        host.style.cssText = 'padding:12px;margin:8px;border:1px solid #666;border-radius:8px;';
-        document.body.appendChild(host);
-        log('warn', '未找到扩展设置容器，已挂到 body 兜底');
-    }
+    return null;
+}
 
+function buildSettingsWrapper(html) {
     const wrap = document.createElement('div');
     wrap.className = 'extension_container';
     wrap.id = `${MODULE_NAME}-settings`;
+    wrap.dataset.stcig = '1';
     wrap.innerHTML = `
-      <div class="inline-drawer">
+      <div class="inline-drawer wide100p">
         <div class="inline-drawer-toggle inline-drawer-header">
           <b>${DISPLAY_NAME}</b>
           <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
         </div>
         <div class="inline-drawer-content">
+          <div class="stcig-hint" style="margin-bottom:8px;opacity:.85;">
+            在这里配置生图 API。若你是从扩展列表启用后才看到本面板，属正常现象。
+          </div>
           ${html}
         </div>
       </div>
     `;
-    host.appendChild(wrap);
+    return wrap;
+}
+
+function injectSettingsPanel({ allowBodyFallback = false } = {}) {
+    if ($('stcig_settings') || document.getElementById(`${MODULE_NAME}-settings`)) {
+        return true;
+    }
+
+    const html = buildSettingsHtml();
+    const host = findSettingsHost();
+    if (!host) {
+        if (!allowBodyFallback) {
+            log('warn', '扩展设置容器尚未就绪，稍后重试注入');
+            return false;
+        }
+        let fallback = document.getElementById('stcig_fallback_host');
+        if (!fallback) {
+            fallback = document.createElement('div');
+            fallback.id = 'stcig_fallback_host';
+            fallback.style.cssText = 'padding:12px;margin:8px;border:1px solid #666;border-radius:8px;z-index:9999;position:relative;';
+            (document.querySelector('#sheld') || document.body).appendChild(fallback);
+            log('warn', '未找到扩展设置容器，已挂到页面兜底区域（请仍优先在“扩展”页查找）');
+        }
+        fallback.appendChild(buildSettingsWrapper(html));
+        bindSettingsUi();
+        syncUiFromSettings();
+        return true;
+    }
+
+    host.appendChild(buildSettingsWrapper(html));
     bindSettingsUi();
     syncUiFromSettings();
+    log('info', '设置面板已注入扩展设置区');
+    return true;
+}
+
+function scheduleSettingsPanelRetry() {
+    let tries = 0;
+    const maxTries = 40;
+    const tick = () => {
+        if (document.getElementById(`${MODULE_NAME}-settings`) || $('stcig_settings')) return;
+        tries += 1;
+        const ok = injectSettingsPanel({ allowBodyFallback: tries >= maxTries });
+        if (ok) return;
+        if (tries < maxTries) {
+            setTimeout(tick, 500);
+        }
+    };
+    setTimeout(tick, 300);
+
+    try {
+        const obs = new MutationObserver(() => {
+            if (document.getElementById(`${MODULE_NAME}-settings`) || $('stcig_settings')) {
+                obs.disconnect();
+                return;
+            }
+            if (findSettingsHost()) {
+                if (injectSettingsPanel({ allowBodyFallback: false })) obs.disconnect();
+            }
+        });
+        obs.observe(document.documentElement || document.body, { childList: true, subtree: true });
+        setTimeout(() => { try { obs.disconnect(); } catch (_) { /* ignore */ } }, 30000);
+    } catch (_) { /* ignore */ }
 }
 
 function bindSettingsUi() {
@@ -1918,30 +2071,38 @@ function loadPromptsScript() {
             resolve(true);
             return;
         }
+        const base = getExtensionBasePath();
         const candidates = [
+            `${base}prompts.js`,
             '/scripts/extensions/third-party/ST-Custom-ImageGen/prompts.js',
             '/scripts/extensions/third-party/st-custom-imagegen/prompts.js',
+            '/scripts/extensions/third-party/SillyTavern-Image-generation/prompts.js',
+            '/scripts/extensions/third-party/SillyTavern-Image-Generation/prompts.js',
         ];
         try {
             const scripts = Array.from(document.getElementsByTagName('script'));
             for (const s of scripts) {
                 const srcAttr = s.src || '';
-                if (/ST-Custom-ImageGen|st-custom-imagegen/i.test(srcAttr) && /index\.js/i.test(srcAttr)) {
+                if (/third-party/i.test(srcAttr) && /index\.js/i.test(srcAttr)) {
                     candidates.unshift(srcAttr.replace(/index\.js(?:\?.*)?$/i, 'prompts.js'));
-                    break;
                 }
             }
         } catch (_) { /* ignore */ }
 
+        const uniq = [...new Set(candidates.filter(Boolean))];
         const tryNext = (i) => {
-            if (i >= candidates.length) {
+            if (i >= uniq.length) {
+                log('warn', 'prompts.js 未加载（将使用内置默认模板）', uniq.slice(0, 4));
                 resolve(false);
                 return;
             }
             const script = document.createElement('script');
-            script.src = candidates[i];
+            script.src = uniq[i];
             script.async = true;
-            script.onload = () => resolve(true);
+            script.onload = () => {
+                log('info', `prompts.js 已加载: ${uniq[i]}`);
+                resolve(true);
+            };
             script.onerror = () => tryNext(i + 1);
             document.head.appendChild(script);
         };
@@ -1955,28 +2116,48 @@ async function initExtension() {
         return;
     }
     try {
+        console.log(`[${MODULE_NAME}] booting from`, getExtensionBasePath());
+        await loadSillyTavernApis();
         loadSettings();
         await loadPromptsScript();
         tryLoadPromptsDefaults();
-        injectSettingsPanel();
+        const injected = injectSettingsPanel({ allowBodyFallback: false });
+        if (!injected) scheduleSettingsPanelRetry();
         bindEvents();
         bindMessageButtons();
         applyExtensionPromptInjection();
         updateStatusBadges();
         extensionInitialized = true;
+        try {
+            window.STCustomImageGen = {
+                name: DISPLAY_NAME,
+                module: MODULE_NAME,
+                version: '1.1.2',
+                getSettings: () => settings,
+                reinjectSettings: () => injectSettingsPanel({ allowBodyFallback: true }),
+            };
+        } catch (_) { /* ignore */ }
         log('info', `${DISPLAY_NAME} 已加载`);
-        toast('info', `${DISPLAY_NAME} 已加载`);
+        toast('info', `${DISPLAY_NAME} 已加载。请到「扩展」设置中查找本面板。`);
     } catch (err) {
-        // Keep eventsBound if listeners already attached to avoid double-binding on retry.
         console.error(`[${MODULE_NAME}] init failed`, err);
         toast('error', `初始化失败: ${err?.message || err}`);
+        // Still try to show a panel so the extension is discoverable.
+        try { scheduleSettingsPanelRetry(); } catch (_) { /* ignore */ }
     }
 }
 
-if (typeof jQuery === 'function') {
-    jQuery(() => { void initExtension(); });
-} else if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', () => { void initExtension(); });
-} else {
-    void initExtension();
+function bootWhenReady() {
+    const start = () => { void initExtension(); };
+    if (typeof jQuery === 'function') {
+        jQuery(start);
+        return;
+    }
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', start, { once: true });
+        return;
+    }
+    start();
 }
+
+bootWhenReady();
