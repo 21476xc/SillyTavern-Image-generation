@@ -1,0 +1,13 @@
+{
+    "display_name": "自定义生图 (OpenAI 兼容)",
+    "loading_order": 100,
+    "requires": [],
+    "optional": [],
+    "js": "index.js",
+    "css": "style.css",
+    "author": "local",
+    "version": "1.1.1",
+    "homePage": "",
+    "auto_update": false,
+    "i18n": {}
+}

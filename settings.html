@@ -1,0 +1,237 @@
+<!--
+  ST-Custom-ImageGen 设置面板 HTML 骨架（REFERENCE ONLY / 仅参考）
+
+  重要：
+  - 实际运行时由 index.js 的 buildSettingsHtml() 动态生成并注入扩展设置区。
+  - 本文件仅供开发对照 / 预览 / 文档对齐，不会被 SillyTavern 自动加载。
+  - 下列元素 ID、选项值、分区结构应与 buildSettingsHtml() 保持一致。
+  - 修改 UI 时请先改 index.js，再同步本文件。
+-->
+<div id="stcig_settings" class="stcig-settings">
+  <div class="stcig-section">
+    <h4>总控</h4>
+    <div class="stcig-status-bar">
+      <span id="stcig_status_badge" class="stcig-badge off">已关闭</span>
+      <span id="stcig_mode_badge" class="stcig-badge">模式: main</span>
+      <span id="stcig_sfw_badge" class="stcig-badge">SFW: 关</span>
+    </div>
+    <div class="stcig-row">
+      <label class="stcig-inline-check"><input type="checkbox" id="stcig_enabled"> 启用扩展</label>
+      <label class="stcig-inline-check"><input type="checkbox" id="stcig_autoGenerate"> 自动生图</label>
+      <label class="stcig-inline-check"><input type="checkbox" id="stcig_onlyAiMessages"> 仅 AI 消息</label>
+      <label class="stcig-inline-check"><input type="checkbox" id="stcig_stripTagsFromDisplay"> 剥离展示中的标签</label>
+      <label class="stcig-inline-check"><input type="checkbox" id="stcig_insertAsMarkdown"> 以 Markdown 插入图片</label>
+      <label class="stcig-inline-check"><input type="checkbox" id="stcig_showMessageButtons"> 消息按钮</label>
+    </div>
+  </div>
+
+  <div class="stcig-section">
+    <h4>生图 API（OpenAI 兼容）</h4>
+    <div class="stcig-row">
+      <label class="stcig-field"><span>Base URL</span>
+        <input type="text" id="stcig_apiBaseUrl" placeholder="https://api.openai.com" autocomplete="off">
+      </label>
+      <label class="stcig-field"><span>API Key</span>
+        <input type="password" id="stcig_apiKey" placeholder="sk-..." autocomplete="off">
+      </label>
+    </div>
+    <div class="stcig-row">
+      <label class="stcig-field"><span>Model</span>
+        <input type="text" id="stcig_apiModel" placeholder="dall-e-3 / flux / sd..." autocomplete="off">
+      </label>
+      <label class="stcig-field"><span>Endpoint 路径</span>
+        <input type="text" id="stcig_apiEndpoint" placeholder="/v1/images/generations" autocomplete="off">
+      </label>
+    </div>
+    <div class="stcig-row">
+      <label class="stcig-field"><span>Size</span>
+        <input type="text" id="stcig_size" placeholder="1024x1024" list="stcig_size_list" autocomplete="off">
+        <datalist id="stcig_size_list">
+          <option value="256x256"></option>
+          <option value="512x512"></option>
+          <option value="1024x1024"></option>
+          <option value="1792x1024"></option>
+          <option value="1024x1792"></option>
+        </datalist>
+      </label>
+      <label class="stcig-field"><span>Quality</span>
+        <select id="stcig_quality">
+          <option value="">（不发送）</option>
+          <option value="standard">standard</option>
+          <option value="hd">hd</option>
+          <option value="low">low</option>
+          <option value="medium">medium</option>
+          <option value="high">high</option>
+          <option value="auto">auto</option>
+        </select>
+      </label>
+      <label class="stcig-field"><span>Style</span>
+        <select id="stcig_style">
+          <option value="">（不发送）</option>
+          <option value="vivid">vivid</option>
+          <option value="natural">natural</option>
+        </select>
+      </label>
+      <label class="stcig-field"><span>n</span>
+        <input type="number" id="stcig_n" min="1" max="4" step="1">
+      </label>
+      <label class="stcig-field"><span>response_format</span>
+        <select id="stcig_responseFormat">
+          <option value="url">url</option>
+          <option value="b64_json">b64_json</option>
+          <option value="auto">auto（优先 url）</option>
+        </select>
+      </label>
+    </div>
+    <div class="stcig-row">
+      <label class="stcig-field"><span>额外 JSON Body（可选，合并进请求）</span>
+        <textarea id="stcig_extraBodyJson" placeholder='{"extra":"value"}'></textarea>
+      </label>
+    </div>
+    <div class="stcig-row">
+      <label class="stcig-inline-check"><input type="checkbox" id="stcig_sendNegativeAsField"> 负向提示词优先作为 negative_prompt 字段发送</label>
+    </div>
+    <div class="stcig-actions">
+      <div class="menu_button" id="stcig_btn_test">测试连接</div>
+      <div class="menu_button" id="stcig_btn_save">保存设置</div>
+    </div>
+  </div>
+
+  <div class="stcig-section">
+    <h4>提示词模式</h4>
+    <div class="stcig-row">
+      <label class="stcig-field"><span>模式</span>
+        <select id="stcig_promptMode">
+          <option value="main">main：主模型输出 &lt;image_prompt&gt; / ```stcig-prompt```</option>
+          <option value="extractor">extractor：二次模型提取提示词</option>
+        </select>
+      </label>
+    </div>
+    <div class="stcig-row">
+      <label class="stcig-field"><span>主模式注入提示</span>
+        <textarea id="stcig_mainInjectionPrompt" placeholder="默认使用 index.js 的 DEFAULT_MAIN_INJECTION；也可粘贴 prompts.js 中文模板"></textarea>
+      </label>
+    </div>
+    <div class="stcig-actions">
+      <div class="menu_button" id="stcig_btn_reset_templates">恢复提示词模板默认</div>
+      <div class="menu_button" id="stcig_btn_load_prompt_defaults">填入 prefix/suffix/negative 默认</div>
+    </div>
+    <div class="stcig-row">
+      <label class="stcig-field"><span>注入深度 depth</span>
+        <input type="number" id="stcig_mainInjectionDepth" min="0" max="99" step="1">
+      </label>
+      <label class="stcig-field"><span>注入位置</span>
+        <select id="stcig_mainInjectionPosition">
+          <option value="in_prompt">IN_PROMPT</option>
+          <option value="in_chat">IN_CHAT</option>
+        </select>
+      </label>
+    </div>
+    <div class="stcig-row">
+      <label class="stcig-inline-check"><input type="checkbox" id="stcig_extractorUseMainCredentials"> 提取器复用生图 API 的 Base/Key</label>
+    </div>
+    <div class="stcig-row">
+      <label class="stcig-field"><span>提取器 Base URL</span>
+        <input type="text" id="stcig_extractorBaseUrl" placeholder="留空则用生图 Base URL" autocomplete="off">
+      </label>
+      <label class="stcig-field"><span>提取器 API Key</span>
+        <input type="password" id="stcig_extractorApiKey" placeholder="留空则用生图 Key" autocomplete="off">
+      </label>
+    </div>
+    <div class="stcig-row">
+      <label class="stcig-field"><span>提取器 Model</span>
+        <input type="text" id="stcig_extractorModel" autocomplete="off">
+      </label>
+      <label class="stcig-field"><span>提取器 Endpoint</span>
+        <input type="text" id="stcig_extractorEndpoint" placeholder="/v1/chat/completions" autocomplete="off">
+      </label>
+    </div>
+    <div class="stcig-row">
+      <label class="stcig-field"><span>提取器系统提示</span>
+        <textarea id="stcig_extractorSystemPrompt" placeholder="EXTRACTOR_USER_TEMPLATE 在 prompts.js，设置页不可编辑"></textarea>
+      </label>
+    </div>
+    <div class="stcig-row">
+      <label class="stcig-field"><span>temperature</span>
+        <input type="number" id="stcig_extractorTemperature" min="0" max="2" step="0.1">
+      </label>
+      <label class="stcig-field"><span>max_tokens</span>
+        <input type="number" id="stcig_extractorMaxTokens" min="32" max="4000" step="1">
+      </label>
+    </div>
+  </div>
+
+  <div class="stcig-section">
+    <h4>提示词处理</h4>
+    <div class="stcig-row">
+      <label class="stcig-field"><span>前缀</span>
+        <textarea id="stcig_promptPrefix" placeholder="加在最终提示词前"></textarea>
+      </label>
+      <label class="stcig-field"><span>后缀</span>
+        <textarea id="stcig_promptSuffix" placeholder="加在最终提示词后"></textarea>
+      </label>
+    </div>
+    <div class="stcig-row">
+      <label class="stcig-field"><span>负向提示词</span>
+        <textarea id="stcig_negativePrompt" placeholder="API 支持则独立字段，否则拼进 prompt"></textarea>
+      </label>
+    </div>
+  </div>
+
+  <div class="stcig-section">
+    <h4>SFW 模式</h4>
+    <div class="stcig-row">
+      <label class="stcig-inline-check"><input type="checkbox" id="stcig_sfwEnabled"> 启用 SFW 约束</label>
+    </div>
+    <div class="stcig-row">
+      <label class="stcig-field"><span>SFW 约束文本</span>
+        <textarea id="stcig_sfwConstraint"></textarea>
+      </label>
+    </div>
+    <div class="stcig-row">
+      <label class="stcig-field"><span>敏感词（逗号分隔）</span>
+        <textarea id="stcig_sfwSensitiveWords"></textarea>
+      </label>
+      <label class="stcig-field"><span>替换为</span>
+        <input type="text" id="stcig_sfwReplaceWith" autocomplete="off">
+      </label>
+    </div>
+  </div>
+
+  <div class="stcig-section">
+    <h4>频率限制</h4>
+    <div class="stcig-row">
+      <label class="stcig-field"><span>冷却（毫秒）</span>
+        <input type="number" id="stcig_cooldownMs" min="0" max="600000" step="100">
+      </label>
+      <label class="stcig-field"><span>每聊天最大自动次数（0=不限）</span>
+        <input type="number" id="stcig_maxAutoPerChat" min="0" max="9999" step="1">
+      </label>
+      <label class="stcig-field"><span>请求超时（毫秒）</span>
+        <input type="number" id="stcig_timeoutMs" min="5000" max="600000" step="1000">
+      </label>
+    </div>
+  </div>
+
+  <div class="stcig-section">
+    <h4>手动生图</h4>
+    <div class="stcig-row">
+      <label class="stcig-field"><span>提示词</span>
+        <textarea id="stcig_manual_prompt" placeholder="直接输入提示词并生成"></textarea>
+      </label>
+    </div>
+    <div class="stcig-actions">
+      <div class="menu_button" id="stcig_btn_manual">生成图片</div>
+      <div class="menu_button" id="stcig_btn_from_last">从最近 AI 回复提取并生成</div>
+      <div class="menu_button" id="stcig_btn_reset_count">重置当前聊天自动计数</div>
+    </div>
+  </div>
+
+  <div class="stcig-section">
+    <h4>日志</h4>
+    <div id="stcig_log" class="stcig-log">（暂无日志）</div>
+    <div class="stcig-actions" style="margin-top:8px;">
+      <div class="menu_button" id="stcig_btn_clear_log">清空日志</div>
+    </div>
+  </div>
+</div>
