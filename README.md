@@ -1,11 +1,16 @@
 # ST-Custom-ImageGen
 
-> **找不到插件面板？** 打开 **扩展 → 管理扩展**，找到 `自定义生图 (OpenAI 兼容)` / `SillyTavern-Image-generation`，确认开关为启用，然后硬刷新页面。设置面板会出现在扩展设置列表（和其他第三方扩展一起），不是单独新页面。
+> **找不到插件面板？**
+> 1. 先确认已更新到 **1.1.5+**（1.1.3 有模块语法错误，安装后设置面板不会出现）。
+> 2. 打开 **扩展 → 管理扩展**，找到 `自定义生图 (OpenAI 兼容)` / `SillyTavern-Image-generation`，确认开关为启用，然后硬刷新。
+> 3. 设置面板在扩展设置列表里（和其他第三方扩展一起），不是单独新页面。
+> 4. 手机浏览器可看日志：搜索 `st-custom-imagegen` 或 `Invalid regular expression flags`。
+
 SillyTavern 第三方扩展：**自定义生图（OpenAI 兼容）**。
 
 在角色扮演过程中，自动或手动调用兼容 OpenAI Images API 的服务生成图片，并插入到对话消息中。支持两种提示词来源模式、SFW 约束、独立提取 API，以及消息级手动重生成。
 
-当前版本：**1.1.4**
+当前版本：**1.1.5**
 
 ---
 
@@ -67,11 +72,21 @@ ST-Custom-ImageGen
 
 ---
 
+## 1.1.5 修复
+
+- **修复测试连接 404 / not found**：当 Base URL 已带 `/v1`（如 `http://127.0.0.1:2156/v1`），且 Endpoint 为 `/v1/images/generations` 时，旧版会拼成 `/v1/v1/...`。现已自动去重。
+- **测试连接优先拉取模型列表**：成功后把 API 返回的模型填入 Model 下拉（仍可手输任意模型名，兼容 Gemini 等网关）。
+- 推荐配置任选其一：
+  - Base: `http://127.0.0.1:2156/v1` + Endpoint: `/images/generations`
+  - Base: `http://127.0.0.1:2156/v1` + Endpoint: `/v1/images/generations`（自动去重，也可）
+  - Base: `http://127.0.0.1:2156` + Endpoint: `/v1/images/generations`
+
 ## 功能概览
 
 | 能力 | 说明 |
 |------|------|
-| OpenAI 兼容生图 | `Base URL` + `API Key` + `Model` + `Endpoint`（默认 `/v1/images/generations`） |
+| OpenAI 兼容生图 | `Base URL` + `API Key` + `Model` + `Endpoint`（默认 `/v1/images/generations`，自动避免双 `/v1`） |
+| 测试连接 / 模型列表 | 优先 `GET /models`，成功后可选任意返回模型，也可手输 |
 | 主模式 `main` | 向主对话注入指令；解析回复中的提示词块后生图 |
 | 提取模式 `extractor` | 消息生成后，另调 Chat Completions 提炼生图提示词 |
 | SFW 模式 | 注入/提取约束 + 敏感词替换 + 额外 negative + 简短 SFW 描述 |
@@ -353,10 +368,11 @@ Content-Type: application/json
 当前：`1.1.4`（见 `manifest.json`；本地扩展，无强制联网更新）
 
 ### 1.1.4
-- 修复“安装后找不到”：动态加载 ST API，避免顶层 import 失败导致整扩展不出现
-- 设置面板支持重试/容器监听注入；暴露 `window.STCustomImageGen`
-- 安装路径/仓库文件夹名自适应（含 `SillyTavern-Image-generation`）
-- README 明确：必须放 third-party 并在扩展页启用
+- **关键修复**：getExtensionBasePath() 误写为 
+eturn /scripts/extensions//;（非法正则），导致 index.js 作为 ES Module 解析失败；ST 激活扩展失败后，设置面板完全不会注入
+- 回退路径改为合法字符串：/scripts/extensions/third-party/SillyTavern-Image-generation/
+- 强化 base path 解析、jQuery 启动时机、设置面板 jQuery append
+- 暴露 window.STCustomImageGen 预初始化钩子，便于控制台强制打开/重注面板
 
 ### 1.1.1
 - 补全/恢复 `style.css` 设置面板与消息按钮样式

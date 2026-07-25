@@ -6,7 +6,7 @@
     "js": "index.js",
     "css": "style.css",
     "author": "21476xc",
-    "version": "1.1.4",
+    "version": "1.1.5",
     "homePage": "https://github.com/21476xc/SillyTavern-Image-generation",
     "auto_update": true,
     "i18n": {}

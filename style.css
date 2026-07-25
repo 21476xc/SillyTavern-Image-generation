@@ -228,3 +228,10 @@ img.stcig-generated-image {
     white-space: normal;
   }
 }
+
+#stcig_settings #stcig_model_fetch_hint {
+  margin-top: 4px;
+  opacity: 0.8;
+  font-size: 0.9em;
+  line-height: 1.35;
+}

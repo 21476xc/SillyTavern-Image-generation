@@ -3,17 +3,26 @@
  * 自定义生图 (OpenAI 兼容)
  * 纯浏览器 ES Module，无打包依赖。
  *
- * 注意：不在顶层静态 import ST 核心模块，避免任一命名导出变化导致整扩展加载失败、
- * 扩展设置面板完全不出现。改为动态 import + window 回退。
+ * Bootstrap 对齐官方第三方扩展：
+ *   jQuery(async () => {
+ *     const html = await renderExtensionTemplateAsync('third-party/<Folder>', 'settings');
+ *     $('#extensions_settings2').append(html);
+ *   });
+ * 不在顶层静态 import ST 核心模块，避免命名导出变化导致整扩展静默失败。
+ * 动态 import + window 回退；settings.html 优先按 import.meta.url 同目录加载。
  */
 
 const MODULE_NAME = 'st-custom-imagegen';
 const DISPLAY_NAME = '自定义生图 (OpenAI 兼容)';
-const EXTENSION_VERSION = '1.1.4';
+const EXTENSION_VERSION = '1.1.5';
 /** @type {string|null} */
 let cachedExtensionRelativeName = null;
 /** @type {any} */
 let renderExtensionTemplateAsyncFn = null;
+/** @type {boolean} */
+let settingsInjectInFlight = false;
+/** @type {boolean} */
+let settingsRetryScheduled = false;
 
 /** @type {any} */
 let stGetContext = null;
@@ -72,7 +81,7 @@ function getExtensionScriptUrl() {
 function getExtensionRelativeName() {
     if (cachedExtensionRelativeName) return cachedExtensionRelativeName;
     const scriptUrl = getExtensionScriptUrl();
-    const m = String(scriptUrl).match(/\/scripts\/extensions\/(third-party\/[^/]+)\//i);
+    const m = String(scriptUrl).match(/\/scripts\/extensions\/(third-party\/[^/?#]+)\//i);
     if (m && m[1]) {
         cachedExtensionRelativeName = m[1];
         return cachedExtensionRelativeName;
@@ -114,22 +123,18 @@ function getExtensionFolderCandidates() {
 }
 
 async function loadSillyTavernApis() {
-    const extCandidates = [
-        new URL('../../../extensions.js', import.meta.url).href,
-        '/scripts/extensions.js',
-        '../../../extensions.js',
-    ];
-    const scriptCandidates = [
-        new URL('../../../../script.js', import.meta.url).href,
-        '/script.js',
-        '../../../../script.js',
-    ];
+    const extCandidates = [];
+    const scriptCandidates = [];
+    try { extCandidates.push(new URL('../../../extensions.js', import.meta.url).href); } catch (_) { /* ignore */ }
+    extCandidates.push('/scripts/extensions.js', '../../../extensions.js');
+    try { scriptCandidates.push(new URL('../../../../script.js', import.meta.url).href); } catch (_) { /* ignore */ }
+    scriptCandidates.push('/script.js', '../../../../script.js');
 
     let extMod = null;
     let scriptMod = null;
     const errors = [];
 
-    for (const url of extCandidates) {
+    for (const url of [...new Set(extCandidates)]) {
         try {
             extMod = await import(url);
             break;
@@ -137,7 +142,7 @@ async function loadSillyTavernApis() {
             errors.push(`extensions:${url}:${err?.message || err}`);
         }
     }
-    for (const url of scriptCandidates) {
+    for (const url of [...new Set(scriptCandidates)]) {
         try {
             scriptMod = await import(url);
             break;
@@ -147,7 +152,8 @@ async function loadSillyTavernApis() {
     }
 
     stGetContext = extMod?.getContext || window.SillyTavern?.getContext || window.getContext || null;
-    extension_settings = extMod?.extension_settings || window.extension_settings || {};
+    // 必须与 ST 使用同一 extension_settings 引用，否则保存无效且表现为“设置丢失”
+    extension_settings = extMod?.extension_settings || window.extension_settings || extension_settings || {};
     saveSettingsDebounced = extMod?.saveSettingsDebounced || window.saveSettingsDebounced || null;
     renderExtensionTemplateAsyncFn = extMod?.renderExtensionTemplateAsync || window.renderExtensionTemplateAsync || null;
 
@@ -167,13 +173,20 @@ async function loadSillyTavernApis() {
         console.log(`[${MODULE_NAME}] partial ST API import`, errors);
     }
 
-    // Ensure settings bucket object exists
     try {
         if (!window.extension_settings || typeof window.extension_settings !== 'object') {
             window.extension_settings = extension_settings || {};
         }
-        if (extension_settings !== window.extension_settings && window.extension_settings) {
+        // 若模块导出与 window 不是同一对象，优先跟随 window（ST 多数构建会挂到 window）
+        // 但若只有模块导出，则回写到 window，便于其它脚本调试
+        if (extMod?.extension_settings && typeof extMod.extension_settings === 'object') {
+            extension_settings = extMod.extension_settings;
+            window.extension_settings = extMod.extension_settings;
+        } else {
             extension_settings = window.extension_settings;
+        }
+        if (!extension_settings[MODULE_NAME] || typeof extension_settings[MODULE_NAME] !== 'object') {
+            extension_settings[MODULE_NAME] = {};
         }
     } catch (_) { /* ignore */ }
 
@@ -473,12 +486,12 @@ function buildSettingsHtml() {
     <div class="stcig-row">
       <label class="stcig-field"><span>Base URL</span><input type="text" id="stcig_apiBaseUrl"></label>
       <label class="stcig-field"><span>API Key</span><input type="password" id="stcig_apiKey"></label>
-      <label class="stcig-field"><span>Model</span><input type="text" id="stcig_apiModel"></label>
+      <label class="stcig-field"><span>Model</span><input type="text" id="stcig_apiModel" list="stcig_apiModel_list" placeholder="测试连接后可下拉选择"><datalist id="stcig_apiModel_list"></datalist><div id="stcig_model_fetch_hint" class="stcig-hint">点击「测试连接」可自动拉取模型列表</div></label>
       <label class="stcig-field"><span>Endpoint</span><input type="text" id="stcig_apiEndpoint"></label>
     </div>
     <div class="stcig-actions">
       <div class="menu_button" id="stcig_btn_save">保存设置</div>
-      <div class="menu_button" id="stcig_btn_test">测试连接</div>
+      <div class="menu_button" id="stcig_btn_test">测试连接并获取模型</div>
     </div>
   </div>
   <div class="stcig-section">
@@ -498,29 +511,64 @@ function buildSettingsHtml() {
 }
 
 function findSettingsHost() {
-    const containerCandidates = [
-        '#extensions_settings2',
-        '#extensions_settings',
-        '#extensions_settings2 .extensions_block',
-        '#extensions_settings .extensions_block',
-        '#rm_extensions_block',
-        '#rm_extensions_block .extensions_block',
-        '#extensions_settings .inline-drawer-content',
-        '#top-settings-holder',
+    // 官方第三方扩展优先挂到 #extensions_settings2，其次 #extensions_settings
+    const ordered = [
+        () => document.getElementById('extensions_settings2'),
+        () => document.querySelector('#extensions_settings2'),
+        () => document.getElementById('extensions_settings'),
+        () => document.querySelector('#extensions_settings'),
+        () => document.querySelector('#extensions_settings2 .extensions_block'),
+        () => document.querySelector('#extensions_settings .extensions_block'),
+        () => document.getElementById('rm_extensions_block'),
+        () => document.querySelector('#rm_extensions_block'),
     ];
-    for (const sel of containerCandidates) {
-        const host = document.querySelector(sel);
-        if (host) return host;
+    for (const get of ordered) {
+        try {
+            const host = get();
+            if (host) return host;
+        } catch (_) { /* ignore */ }
+    }
+    return null;
+}
+
+function getMountedSettingsRoot() {
+    const byId = document.getElementById(`${MODULE_NAME}-settings`);
+    if (byId) return byId;
+    const hosted = document.querySelector('#extensions_settings2 [data-stcig="1"], #extensions_settings [data-stcig="1"], #rm_extensions_block [data-stcig="1"], #stcig_fallback_host [data-stcig="1"]');
+    if (hosted) return hosted;
+    const inner = document.getElementById('stcig_settings');
+    if (inner) {
+        const root = inner.closest('[data-stcig="1"], .stcig-settings-root, .extension_container') || inner;
+        // 只有已经挂在扩展设置区/兜底区时才视为存在，避免“假阳性”跳过注入
+        if (inner.closest('#extensions_settings2, #extensions_settings, #rm_extensions_block, #stcig_fallback_host, #sheld')) {
+            return root;
+        }
     }
     return null;
 }
 
 function settingsPanelExists() {
-    return !!(
-        document.getElementById(`${MODULE_NAME}-settings`)
-        || document.getElementById('stcig_settings')
-        || document.querySelector('[data-stcig="1"]')
-    );
+    return !!getMountedSettingsRoot();
+}
+
+/**
+ * 若面板已挂在次优容器，而官方首选 #extensions_settings2 已出现，则迁移过去。
+ * 手机端常见：先出现 extensions_settings，稍后才挂 settings2。
+ */
+function relocateSettingsPanelIfNeeded() {
+    const root = getMountedSettingsRoot();
+    if (!root) return false;
+    const preferred = document.getElementById('extensions_settings2') || document.querySelector('#extensions_settings2');
+    if (!preferred) return false;
+    if (preferred.contains(root)) return false;
+    try {
+        preferred.appendChild(root);
+        log('info', '设置面板已迁移到 #extensions_settings2');
+        return true;
+    } catch (err) {
+        log('warn', '设置面板迁移失败', err?.message || err);
+        return false;
+    }
 }
 
 function buildSettingsWrapper(html) {
@@ -553,7 +601,31 @@ async function loadSettingsTemplateHtml() {
     const uniq = [...new Set(names.filter(Boolean))];
     const errors = [];
 
-    // Official ST API
+    // 0) 与 index.js 同目录（GitHub 安装后最稳，不依赖目录名猜测）
+    const localCandidates = [];
+    try { localCandidates.push(new URL('./settings.html', import.meta.url).href); } catch (_) { /* ignore */ }
+    try {
+        const base = getExtensionBasePath();
+        if (base) localCandidates.push(`${base}settings.html`);
+    } catch (_) { /* ignore */ }
+    for (const url of [...new Set(localCandidates.filter(Boolean))]) {
+        try {
+            const resp = await fetch(url, { cache: 'no-cache' });
+            if (!resp.ok) {
+                errors.push(`${url}: HTTP ${resp.status}`);
+                continue;
+            }
+            const html = await resp.text();
+            if (html && html.trim() && /stcig|st-custom-imagegen|生图/i.test(html)) {
+                log('info', `settings 模板已本地加载: ${url}`);
+                return html;
+            }
+        } catch (err) {
+            errors.push(`local:${url}:${err?.message || err}`);
+        }
+    }
+
+    // 1) Official ST API: renderExtensionTemplateAsync('third-party/<Folder>', 'settings')
     if (typeof renderExtensionTemplateAsyncFn === 'function') {
         for (const name of uniq) {
             try {
@@ -568,7 +640,7 @@ async function loadSettingsTemplateHtml() {
         }
     }
 
-    // fetch fallback (user-scoped / third-party both map under /scripts/extensions/)
+    // 2) fetch fallback (third-party 与部分用户目录都映射在 /scripts/extensions/)
     for (const name of uniq) {
         try {
             const url = `/scripts/extensions/${name}/settings.html`;
@@ -587,13 +659,19 @@ async function loadSettingsTemplateHtml() {
         }
     }
 
-    log('warn', 'settings.html 未能加载，使用内置精简面板', errors.slice(0, 6));
+    log('warn', 'settings.html 未能加载，使用内置精简面板', errors.slice(0, 8));
     return null;
 }
 
 function mountSettingsNode(node, { allowBodyFallback = false } = {}) {
     if (!node) return false;
-    if (settingsPanelExists()) return true;
+    if (settingsPanelExists()) {
+        bindSettingsUi();
+        syncUiFromSettings();
+        updateStatusBadges();
+        updateModeVisibility();
+        return true;
+    }
 
     const host = findSettingsHost();
     if (!host) {
@@ -607,11 +685,11 @@ function mountSettingsNode(node, { allowBodyFallback = false } = {}) {
             fallback.id = 'stcig_fallback_host';
             fallback.style.cssText = 'padding:12px;margin:8px;border:1px solid #666;border-radius:8px;z-index:9999;position:relative;';
             (document.querySelector('#sheld') || document.body).appendChild(fallback);
-            log('warn', '未找到扩展设置容器，已挂到页面兜底区域（可在“扩展”页查找）');
+            log('warn', '未找到扩展设置容器，已挂到页面兜底区域（请仍到“扩展”页查找）');
         }
         fallback.appendChild(node);
     } else {
-        // Official extensions use $('#extensions_settings2').append(html)
+        // 官方写法：$('#extensions_settings2').append(html)
         try {
             if (typeof jQuery === 'function') {
                 jQuery(host).append(node);
@@ -621,7 +699,7 @@ function mountSettingsNode(node, { allowBodyFallback = false } = {}) {
         } catch (_) {
             host.appendChild(node);
         }
-        log('info', '设置面板已注入扩展设置页');
+        log('info', '设置面板已注入扩展设置页', host.id || host.className || host.tagName);
     }
 
     bindSettingsUi();
@@ -632,66 +710,107 @@ function mountSettingsNode(node, { allowBodyFallback = false } = {}) {
 }
 
 async function injectSettingsPanel({ allowBodyFallback = false } = {}) {
-    if (settingsPanelExists()) return true;
-
-    let templateHtml = null;
+    if (settingsPanelExists()) {
+        relocateSettingsPanelIfNeeded();
+        bindSettingsUi();
+        return true;
+    }
+    if (settingsInjectInFlight) return false;
+    settingsInjectInFlight = true;
     try {
-        templateHtml = await loadSettingsTemplateHtml();
-    } catch (err) {
-        log('warn', '加载 settings 模板异常', err?.message || err);
-    }
-
-    let node = null;
-    if (templateHtml) {
-        const wrap = document.createElement('div');
-        wrap.innerHTML = templateHtml.trim();
-        node = wrap.firstElementChild || wrap;
-        if (!node.id) node.id = `${MODULE_NAME}-settings`;
-        node.dataset.stcig = '1';
-        if (!node.classList.contains('extension_container')) {
-            node.classList.add('extension_container');
+        let templateHtml = null;
+        try {
+            templateHtml = await loadSettingsTemplateHtml();
+        } catch (err) {
+            log('warn', '加载 settings 模板异常', err?.message || err);
         }
-    } else {
-        node = buildSettingsWrapper(buildSettingsHtml());
-    }
 
-    return mountSettingsNode(node, { allowBodyFallback });
+        // await 期间可能已有并发注入完成
+        if (settingsPanelExists()) {
+            bindSettingsUi();
+            return true;
+        }
+
+        let node = null;
+        if (templateHtml) {
+            const wrap = document.createElement('div');
+            wrap.innerHTML = String(templateHtml).trim();
+            // 跳过前导空白/注释文本节点
+            node = wrap.querySelector?.(`#${MODULE_NAME}-settings, [data-stcig="1"], .stcig-settings-root, #stcig_settings`)
+                || wrap.firstElementChild
+                || wrap;
+            if (!node.id) node.id = `${MODULE_NAME}-settings`;
+            node.dataset.stcig = '1';
+            if (!node.classList.contains('extension_container')) {
+                node.classList.add('extension_container');
+            }
+            if (!node.classList.contains('stcig-settings-root')) {
+                node.classList.add('stcig-settings-root');
+            }
+        } else {
+            node = buildSettingsWrapper(buildSettingsHtml());
+        }
+
+        return mountSettingsNode(node, { allowBodyFallback });
+    } finally {
+        settingsInjectInFlight = false;
+    }
 }
 
 function scheduleSettingsPanelRetry() {
+    if (settingsRetryScheduled) return;
+    settingsRetryScheduled = true;
     let tries = 0;
-    const maxTries = 40;
+    const maxTries = 60;
     const tick = async () => {
-        if (settingsPanelExists()) return;
+        if (settingsPanelExists()) {
+            relocateSettingsPanelIfNeeded();
+            return;
+        }
         tries += 1;
         const ok = await injectSettingsPanel({ allowBodyFallback: tries >= maxTries });
         if (ok) return;
         if (tries < maxTries) {
-            setTimeout(() => { void tick(); }, 500);
+            setTimeout(() => { void tick(); }, tries < 10 ? 300 : 500);
         }
     };
-    setTimeout(() => { void tick(); }, 300);
+    setTimeout(() => { void tick(); }, 200);
 
     try {
+        let obsTimer = null;
         const obs = new MutationObserver(() => {
             if (settingsPanelExists()) {
-                obs.disconnect();
+                relocateSettingsPanelIfNeeded();
                 return;
             }
-            if (findSettingsHost()) {
+            if (!findSettingsHost()) return;
+            if (obsTimer) return;
+            obsTimer = setTimeout(() => {
+                obsTimer = null;
                 void injectSettingsPanel({ allowBodyFallback: false }).then((ok) => {
                     if (ok) obs.disconnect();
                 });
-            }
+            }, 100);
         });
         obs.observe(document.documentElement || document.body, { childList: true, subtree: true });
-        setTimeout(() => { try { obs.disconnect(); } catch (_) { /* ignore */ } }, 30000);
+        // 手机端扩展抽屉可能很晚才挂载，观察更久一点
+        setTimeout(() => { try { obs.disconnect(); } catch (_) { /* ignore */ } }, 120000);
+    } catch (_) { /* ignore */ }
+
+    // 页面重新可见时再尝试一次（移动端切后台/回前台）
+    try {
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible' && !settingsPanelExists()) {
+                void injectSettingsPanel({ allowBodyFallback: false });
+            }
+        });
     } catch (_) { /* ignore */ }
 }
 
 function openSettingsPanel() {
     void injectSettingsPanel({ allowBodyFallback: true }).then(() => {
-        const el = document.getElementById(`${MODULE_NAME}-settings`)
+        const el = getMountedSettingsRoot()
+            || document.getElementById(`${MODULE_NAME}-settings`)
             || document.getElementById('stcig_settings')
             || document.querySelector('[data-stcig="1"]');
         if (!el) {
@@ -699,13 +818,18 @@ function openSettingsPanel() {
             return;
         }
         try {
+            // 尽量先打开 ST 扩展页相关抽屉
+            const extTab = document.querySelector('#extensions_button, .extensions_button, [data-i18n="Extensions"], #rm_button_extensions');
+            extTab?.click?.();
+        } catch (_) { /* ignore */ }
+        try {
             el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-            const drawer = el.querySelector?.('.inline-drawer');
             const content = el.querySelector?.('.inline-drawer-content');
+            const toggle = el.querySelector?.('.inline-drawer-toggle');
             if (content && getComputedStyle(content).display === 'none') {
-                el.querySelector?.('.inline-drawer-toggle')?.click?.();
-            } else if (drawer && !drawer.classList.contains('open')) {
-                el.querySelector?.('.inline-drawer-toggle')?.click?.();
+                toggle?.click?.();
+            } else if (el.querySelector?.('.inline-drawer') && content && content.offsetHeight === 0) {
+                toggle?.click?.();
             }
         } catch (_) { /* ignore */ }
         toast('info', '已定位到设置面板');
@@ -749,6 +873,13 @@ function scheduleWandMenuButton() {
     }, 1000);
 }
 function bindSettingsUi() {
+    const root = (typeof getMountedSettingsRoot === 'function' ? getMountedSettingsRoot() : null)
+        || document.getElementById(`${MODULE_NAME}-settings`)
+        || document.getElementById('stcig_settings');
+    if (!root) return;
+    if (root.dataset && root.dataset.stcigBound === '1') return;
+    if (root.dataset) root.dataset.stcigBound = '1';
+
     const ids = [
         'enabled', 'autoGenerate', 'onlyAiMessages', 'stripTagsFromDisplay', 'insertAsMarkdown', 'showMessageButtons',
         'apiBaseUrl', 'apiKey', 'apiModel', 'apiEndpoint', 'size', 'quality', 'style', 'n', 'responseFormat', 'extraBodyJson', 'sendNegativeAsField',
@@ -1236,13 +1367,199 @@ async function extractPromptFromMessage(messageText, { forceExtractor = false, a
     return await callExtractorApi(messageText);
 }
 
+function stripTrailingSlashes(value) {
+    return String(value || '').replace(/\/+$/, '');
+}
+
+function ensureLeadingSlash(value) {
+    const s = String(value || '').trim();
+    if (!s) return '';
+    if (/^https?:\/\//i.test(s)) return s;
+    return s.startsWith('/') ? s : `/${s}`;
+}
+
+/**
+ * Smart OpenAI-compat URL join.
+ * Avoids /v1/v1/... when base already ends with /v1 and endpoint also starts with /v1/.
+ * Absolute endpoint URLs are returned as-is.
+ */
 function joinUrl(base, path) {
-    const b = String(base || '').replace(/\/+$/, '');
-    let p = String(path || '');
-    if (!p.startsWith('/')) p = `/${p}`;
-    if (!b) return p;
-    if (/^https?:\/\//i.test(p)) return p;
-    return `${b}${p}`;
+    const rawBase = String(base || '').trim();
+    const rawPath = String(path || '').trim();
+    if (!rawBase && !rawPath) return '';
+    if (/^https?:\/\//i.test(rawPath)) return rawPath;
+
+    const b = stripTrailingSlashes(rawBase);
+    let p = ensureLeadingSlash(rawPath);
+    if (!b) return p || '';
+    if (!p) return b;
+
+    // Collapse duplicated /v1 prefixes: base ends with /v1 and path starts with /v1/
+    const baseHasV1 = /\/v1$/i.test(b);
+    if (baseHasV1 && /^\/v1(\/|$)/i.test(p)) {
+        p = p.replace(/^\/v1/i, '') || '/';
+        if (!p.startsWith('/')) p = `/${p}`;
+    }
+
+    // Also collapse exact duplicated trailing segment pairs like /openai + /openai/...
+    try {
+        const baseUrl = new URL(b.includes('://') ? b : `http://dummy.local${b.startsWith('/') ? b : `/${b}`}`);
+        const basePath = stripTrailingSlashes(baseUrl.pathname || '');
+        if (basePath && basePath !== '/' && p.toLowerCase().startsWith(basePath.toLowerCase() + '/')) {
+            // path already contains base path prefix
+            p = p.slice(basePath.length) || '/';
+            if (!p.startsWith('/')) p = `/${p}`;
+        } else if (basePath && basePath !== '/' && p.toLowerCase() === basePath.toLowerCase()) {
+            p = '';
+        }
+    } catch (_) {
+        // ignore URL parse failures for exotic bases
+    }
+
+    return p ? `${b}${p}` : b;
+}
+
+function buildApiUrl(baseUrl, endpoint) {
+    return joinUrl(baseUrl, endpoint);
+}
+
+function candidateModelsUrls(baseUrl) {
+    const base = stripTrailingSlashes(String(baseUrl || '').trim());
+    if (!base) return [];
+    const urls = [];
+    const push = (u) => {
+        const s = String(u || '').trim();
+        if (s && !urls.includes(s)) urls.push(s);
+    };
+
+    // Prefer natural OpenAI-compat locations relative to configured base.
+    push(joinUrl(base, '/models'));
+    push(joinUrl(base, '/v1/models'));
+    push(joinUrl(base, '/openai/v1/models'));
+
+    // If base already ends with /v1, also try parent host /v1/models and /models.
+    if (/\/v1$/i.test(base)) {
+        const parent = base.replace(/\/v1$/i, '');
+        push(joinUrl(parent, '/v1/models'));
+        push(joinUrl(parent, '/models'));
+    } else {
+        // base without /v1: try host root variants
+        try {
+            const u = new URL(base);
+            push(`${stripTrailingSlashes(u.origin)}/v1/models`);
+            push(`${stripTrailingSlashes(u.origin)}/models`);
+        } catch (_) {
+            /* ignore */
+        }
+    }
+    return urls;
+}
+
+function parseModelIds(data) {
+    const ids = [];
+    const push = (id) => {
+        const s = String(id || '').trim();
+        if (s && !ids.includes(s)) ids.push(s);
+    };
+    if (!data) return ids;
+    if (Array.isArray(data)) {
+        for (const item of data) {
+            if (typeof item === 'string') push(item);
+            else if (item && typeof item === 'object') push(item.id || item.model || item.name);
+        }
+        return ids;
+    }
+    const bags = [];
+    if (Array.isArray(data.data)) bags.push(data.data);
+    if (Array.isArray(data.models)) bags.push(data.models);
+    if (Array.isArray(data.data?.data)) bags.push(data.data.data);
+    if (Array.isArray(data.result)) bags.push(data.result);
+    if (Array.isArray(data.results)) bags.push(data.results);
+    for (const bag of bags) {
+        for (const item of bag) {
+            if (typeof item === 'string') push(item);
+            else if (item && typeof item === 'object') push(item.id || item.model || item.name);
+        }
+    }
+    // Gemini-ish / gateway shapes
+    if (typeof data.model === 'string') push(data.model);
+    if (typeof data.id === 'string') push(data.id);
+    return ids;
+}
+
+function authHeaders(apiKey, extra = {}) {
+    const headers = { ...extra };
+    const key = String(apiKey || '').trim();
+    if (key) {
+        headers.Authorization = `Bearer ${key}`;
+        // Some OpenAI-compatible / Gemini gateways also accept these.
+        if (!headers['x-api-key']) headers['x-api-key'] = key;
+    }
+    return headers;
+}
+
+function fillModelDatalist(datalistId, models, currentValue) {
+    const list = document.getElementById(datalistId);
+    if (!list) return 0;
+    const ids = Array.isArray(models) ? models.slice() : [];
+    const cur = String(currentValue || '').trim();
+    if (cur && !ids.includes(cur)) ids.unshift(cur);
+    list.innerHTML = '';
+    for (const id of ids) {
+        const opt = document.createElement('option');
+        opt.value = id;
+        list.appendChild(opt);
+    }
+    return ids.length;
+}
+
+function populateModelSelectors(models, { selectCurrent = true } = {}) {
+    const ids = Array.isArray(models) ? models.filter(Boolean) : [];
+    const n1 = fillModelDatalist('stcig_apiModel_list', ids, settings.apiModel);
+    const n2 = fillModelDatalist('stcig_extractorModel_list', ids, settings.extractorModel);
+    const hint = $('stcig_model_fetch_hint');
+    if (hint) {
+        hint.textContent = ids.length
+            ? `已加载 ${ids.length} 个模型，可下拉选择或继续手输`
+            : '未获取到模型列表，可手动填写模型名';
+    }
+    if (selectCurrent) {
+        const modelInput = $('stcig_apiModel');
+        if (modelInput && settings.apiModel) modelInput.value = settings.apiModel;
+        const extInput = $('stcig_extractorModel');
+        if (extInput && settings.extractorModel) extInput.value = settings.extractorModel;
+    }
+    return Math.max(n1, n2, ids.length);
+}
+
+async function fetchModelList(baseUrl, apiKey, { timeoutMs = 20000 } = {}) {
+    const base = String(baseUrl || '').trim();
+    if (!base) throw new Error('Base URL 未配置');
+    const candidates = candidateModelsUrls(base);
+    if (!candidates.length) throw new Error('无法构造 /models 请求地址');
+
+    const errors = [];
+    for (const url of candidates) {
+        try {
+            log('info', '拉取模型列表', { url });
+            const data = await fetchJson(url, {
+                method: 'GET',
+                headers: authHeaders(apiKey, { Accept: 'application/json' }),
+                timeoutMs,
+            });
+            const models = parseModelIds(data);
+            if (models.length) {
+                return { models, url, raw: data };
+            }
+            errors.push(`${url} -> 响应无模型字段`);
+        } catch (err) {
+            errors.push(`${url} -> ${err?.message || err}`);
+        }
+    }
+    const err = new Error(errors.slice(0, 4).join(' | ') || '拉取模型列表失败');
+    err.code = 'MODELS_FETCH_FAILED';
+    err.details = errors;
+    throw err;
 }
 
 function extractApiErrorMessage(data, statusText, status) {
@@ -1281,9 +1598,10 @@ async function fetchJson(url, { method = 'POST', headers = {}, body, timeoutMs }
         try { data = text ? JSON.parse(text) : null; } catch (_) { data = { raw: text }; }
         if (!res.ok) {
             const msg = extractApiErrorMessage(data, res.statusText, res.status);
-            const err = new Error(msg);
+            const err = new Error(`${msg} (${method} ${url})`);
             err.status = res.status;
             err.data = data;
+            err.url = url;
             throw err;
         }
         return data;
@@ -1354,14 +1672,11 @@ async function callExtractorApi(messageText) {
         ].join('\n');
     const userContent = fillTemplate(userTemplate, vars) || String(messageText || '').slice(0, 12000);
 
-    const url = joinUrl(base, endpoint);
-    log('info', '调用提取器', { url, model });
+    const url = buildApiUrl(base, endpoint);
+    log('info', '调用提取器', { url, model, base, endpoint });
 
     const data = await fetchJson(url, {
-        headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${key}`,
-        },
+        headers: authHeaders(key, { 'Content-Type': 'application/json' }),
         body: {
             model,
             temperature: settings.extractorTemperature,
@@ -1505,15 +1820,12 @@ async function callImageApi(finalPrompt) {
     if (!base) throw new Error('生图 Base URL 未配置');
     if (!key) throw new Error('生图 API Key 未配置');
 
-    const url = joinUrl(base, endpoint);
+    const url = buildApiUrl(base, endpoint);
     const body = buildImageRequestBody(finalPrompt);
-    log('info', '调用生图 API', { url, model: body.model, size: body.size, n: body.n });
+    log('info', '调用生图 API', { url, model: body.model, size: body.size, n: body.n, base, endpoint });
 
     const data = await fetchJson(url, {
-        headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${key}`,
-        },
+        headers: authHeaders(key, { 'Content-Type': 'application/json' }),
         body,
     });
     return parseImageResponse(data);
@@ -1968,15 +2280,69 @@ async function testConnection() {
     }
     generating = true;
     try {
-        toast('info', '正在测试生图 API...');
-        const probePrompt = shapeFinalPrompt(
-            settings.sfwEnabled
-                ? 'a simple red apple on a white table, product photo, SFW'
-                : 'a simple red apple on a white table, product photo',
-        );
-        const imageInfo = await callImageApi(probePrompt);
-        toast('success', '生图 API 连接成功');
-        log('info', '测试连接成功', { url: (imageInfo.url || '').slice(0, 120) });
+        const base = String(settings.apiBaseUrl || '').trim();
+        const key = String(settings.apiKey || '').trim();
+        const endpoint = String(settings.apiEndpoint || '/v1/images/generations').trim() || '/v1/images/generations';
+        if (!base) throw new Error('生图 Base URL 未配置');
+        if (!key) log('warn', '未配置 API Key：本地服务可能可用，云端网关常会 401');
+
+        const imageUrl = buildApiUrl(base, endpoint);
+        toast('info', '正在测试连接并获取模型列表...');
+        log('info', '开始测试连接', { base, endpoint, imageUrl });
+
+        let models = [];
+        let modelsUrl = '';
+        let modelsOk = false;
+        let modelsError = '';
+        try {
+            const result = await fetchModelList(base, key, { timeoutMs: Math.min(settings.timeoutMs || 120000, 30000) });
+            models = result.models || [];
+            modelsUrl = result.url || '';
+            modelsOk = true;
+            populateModelSelectors(models, { selectCurrent: true });
+            // If current model empty and list has items, prefill first.
+            if (!settings.apiModel && models.length) {
+                settings.apiModel = models[0];
+                const el = $('stcig_apiModel');
+                if (el) el.value = models[0];
+                saveSettings();
+            }
+            log('info', `模型列表获取成功（${models.length}）`, { modelsUrl, sample: models.slice(0, 12) });
+        } catch (err) {
+            modelsError = err?.message || String(err);
+            populateModelSelectors([], { selectCurrent: true });
+            log('warn', '模型列表获取失败，将继续探测生图端点', modelsError);
+        }
+
+        // Lightweight success path: /models is enough for "connection OK".
+        // Still do a best-effort endpoint existence tip without spending image credits by default.
+        let endpointNote = '';
+        try {
+            // OPTIONS/GET may not be supported; just report resolved URL for user visibility.
+            endpointNote = `生图地址: ${imageUrl}`;
+        } catch (_) { /* ignore */ }
+
+        if (modelsOk) {
+            toast('success', `连接成功，已加载 ${models.length} 个模型`);
+            log('info', '测试连接成功（models）', { modelsUrl, imageUrl, modelCount: models.length });
+        } else {
+            // Fallback: actual image generation probe when /models unavailable.
+            toast('info', '未拿到模型列表，改用生图请求探测...');
+            const probePrompt = shapeFinalPrompt(
+                settings.sfwEnabled
+                    ? 'a simple red apple on a white table, product photo, SFW'
+                    : 'a simple red apple on a white table, product photo',
+            );
+            const imageInfo = await callImageApi(probePrompt);
+            toast('success', '生图 API 连接成功（模型列表不可用，可手动填模型）');
+            log('info', '测试连接成功（image probe）', {
+                imageUrl,
+                url: (imageInfo.url || '').slice(0, 120),
+                modelsError,
+            });
+        }
+
+        if (endpointNote) log('info', endpointNote);
 
         if (settings.promptMode === 'extractor') {
             try {
@@ -1984,13 +2350,17 @@ async function testConnection() {
                 log('info', '提取器测试成功', p.slice(0, 160));
                 toast('success', '提取器 API 连接成功');
             } catch (err) {
-                toast('warning', `生图 OK，但提取器失败: ${err?.message || err}`);
+                toast('warning', `生图侧 OK，但提取器失败: ${err?.message || err}`);
                 log('warn', '提取器测试失败', err?.message || err);
             }
         }
     } catch (err) {
-        toast('error', `测试失败: ${err?.message || err}`);
-        log('error', '测试连接失败', err?.message || err);
+        const base = String(settings.apiBaseUrl || '').trim();
+        const endpoint = String(settings.apiEndpoint || '/v1/images/generations').trim();
+        const imageUrl = base ? buildApiUrl(base, endpoint) : '(no base)';
+        const msg = err?.message || String(err);
+        toast('error', `测试失败: ${msg}`);
+        log('error', '测试连接失败', { message: msg, imageUrl, base, endpoint, status: err?.status });
     } finally {
         generating = false;
         if (pendingAutoJob) schedulePendingAutoRetry(400, '测试结束');
@@ -2146,7 +2516,11 @@ async function initExtension() {
         await loadPromptsScript();
         tryLoadPromptsDefaults();
         const injected = await injectSettingsPanel({ allowBodyFallback: false });
-        if (!injected) scheduleSettingsPanelRetry();
+        // 即使首次成功，也注册长观察，防止 ST 重绘扩展区后面板丢失（尤其手机端）
+        scheduleSettingsPanelRetry();
+        if (!injected) {
+            log('warn', '首次设置面板注入未成功，已安排重试');
+        }
         scheduleWandMenuButton();
         bindEvents();
         bindMessageButtons();
