@@ -9,7 +9,7 @@
 
 const MODULE_NAME = 'st-custom-imagegen';
 const DISPLAY_NAME = '自定义生图 (OpenAI 兼容)';
-const EXTENSION_VERSION = '1.1.3';
+const EXTENSION_VERSION = '1.1.4';
 /** @type {string|null} */
 let cachedExtensionRelativeName = null;
 /** @type {any} */
@@ -85,9 +85,20 @@ function getExtensionRelativeName() {
 function getExtensionBasePath() {
     const scriptUrl = getExtensionScriptUrl();
     if (scriptUrl) {
-        return scriptUrl.replace(/index\.js(?:\?.*)?$/i, '');
+        try {
+            const u = new URL(scriptUrl, window.location?.href || 'http://127.0.0.1/');
+            u.search = '';
+            u.hash = '';
+            let path = u.pathname || '';
+            path = path.replace(/index\.js$/i, '');
+            if (!path.endsWith('/')) path += '/';
+            return path;
+        } catch (_) {
+            return String(scriptUrl).replace(/index\.js(?:\?.*)?$/i, '');
+        }
     }
-    return /scripts/extensions//;
+    // GitHub install default folder name
+    return '/scripts/extensions/third-party/SillyTavern-Image-generation/';
 }
 
 function getExtensionFolderCandidates() {
@@ -596,12 +607,21 @@ function mountSettingsNode(node, { allowBodyFallback = false } = {}) {
             fallback.id = 'stcig_fallback_host';
             fallback.style.cssText = 'padding:12px;margin:8px;border:1px solid #666;border-radius:8px;z-index:9999;position:relative;';
             (document.querySelector('#sheld') || document.body).appendChild(fallback);
-            log('warn', '未找到扩展设置容器，已挂到页面兜底区域（请仍优先在“扩展”页查找）');
+            log('warn', '未找到扩展设置容器，已挂到页面兜底区域（可在“扩展”页查找）');
         }
         fallback.appendChild(node);
     } else {
-        host.appendChild(node);
-        log('info', '设置面板已注入扩展设置区');
+        // Official extensions use $('#extensions_settings2').append(html)
+        try {
+            if (typeof jQuery === 'function') {
+                jQuery(host).append(node);
+            } else {
+                host.appendChild(node);
+            }
+        } catch (_) {
+            host.appendChild(node);
+        }
+        log('info', '设置面板已注入扩展设置页');
     }
 
     bindSettingsUi();
@@ -2145,7 +2165,7 @@ async function initExtension() {
             };
         } catch (_) { /* ignore */ }
         log('info', `${DISPLAY_NAME} v${EXTENSION_VERSION} 已加载`);
-        toast('info', `${DISPLAY_NAME} 已加载。路径：扩展 → 管理扩展 / 扩展设置 / 魔杖菜单`);
+        toast('info', `${DISPLAY_NAME} 已加载。请到「扩展」抽屉查找本面板；若没有，先打开「管理扩展」确认已启用`);
     } catch (err) {
         console.error(`[${MODULE_NAME}] init failed`, err);
         toast('error', `初始化失败: ${err?.message || err}`);
@@ -2155,16 +2175,31 @@ async function initExtension() {
 }
 
 function bootWhenReady() {
+    // Match official third-party extensions: jQuery(async () => { ... })
     const start = () => { void initExtension(); };
-    if (typeof jQuery === 'function') {
-        jQuery(start);
-        return;
-    }
+    try {
+        if (typeof jQuery === 'function') {
+            jQuery(async () => { start(); });
+            return;
+        }
+    } catch (_) { /* ignore */ }
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', start, { once: true });
         return;
     }
     start();
 }
+
+// Extra safety: if the module evaluated, expose a tiny pre-init hook immediately.
+try {
+    window.STCustomImageGen = window.STCustomImageGen || {
+        name: DISPLAY_NAME,
+        module: MODULE_NAME,
+        version: EXTENSION_VERSION,
+        booting: true,
+        openSettings: () => openSettingsPanel(),
+        reinjectSettings: () => injectSettingsPanel({ allowBodyFallback: true }),
+    };
+} catch (_) { /* ignore */ }
 
 bootWhenReady();

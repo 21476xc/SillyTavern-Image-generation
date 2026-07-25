@@ -1,10 +1,11 @@
 # ST-Custom-ImageGen
 
+> **找不到插件面板？** 打开 **扩展 → 管理扩展**，找到 `自定义生图 (OpenAI 兼容)` / `SillyTavern-Image-generation`，确认开关为启用，然后硬刷新页面。设置面板会出现在扩展设置列表（和其他第三方扩展一起），不是单独新页面。
 SillyTavern 第三方扩展：**自定义生图（OpenAI 兼容）**。
 
 在角色扮演过程中，自动或手动调用兼容 OpenAI Images API 的服务生成图片，并插入到对话消息中。支持两种提示词来源模式、SFW 约束、独立提取 API，以及消息级手动重生成。
 
-当前版本：**1.1.3**
+当前版本：**1.1.4**
 
 ---
 
@@ -349,9 +350,9 @@ Content-Type: application/json
 
 ## 版本
 
-当前：`1.1.3`（见 `manifest.json`；本地扩展，无强制联网更新）
+当前：`1.1.4`（见 `manifest.json`；本地扩展，无强制联网更新）
 
-### 1.1.3
+### 1.1.4
 - 修复“安装后找不到”：动态加载 ST API，避免顶层 import 失败导致整扩展不出现
 - 设置面板支持重试/容器监听注入；暴露 `window.STCustomImageGen`
 - 安装路径/仓库文件夹名自适应（含 `SillyTavern-Image-generation`）
