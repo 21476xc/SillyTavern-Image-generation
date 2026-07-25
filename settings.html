@@ -1,14 +1,15 @@
-<!--
-  ST-Custom-ImageGen 设置面板 HTML 骨架（REFERENCE ONLY / 仅参考）
-
-  重要：
-  - 实际运行时由 index.js 的 buildSettingsHtml() 动态生成并注入扩展设置区。
-  - 本文件仅供开发对照 / 预览 / 文档对齐，不会被 SillyTavern 自动加载。
-  - 下列元素 ID、选项值、分区结构应与 buildSettingsHtml() 保持一致。
-  - 修改 UI 时请先改 index.js，再同步本文件。
--->
-<div id="stcig_settings" class="stcig-settings">
-  <div class="stcig-section">
+<div class="stcig-settings-root extension_container" id="st-custom-imagegen-settings" data-stcig="1">
+    <div class="inline-drawer wide100p">
+        <div class="inline-drawer-toggle inline-drawer-header">
+            <b>自定义生图 (OpenAI 兼容)</b>
+            <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+        </div>
+        <div class="inline-drawer-content">
+            <div class="stcig-hint" style="margin-bottom:8px;opacity:.85;">
+                配置 OpenAI 兼容生图 API。安装后请先在「扩展 → 管理扩展」中确认本扩展已启用。
+            </div>
+            <div id="stcig_settings" class="stcig-settings">
+<div class="stcig-section">
     <h4>总控</h4>
     <div class="stcig-status-bar">
       <span id="stcig_status_badge" class="stcig-badge off">已关闭</span>
@@ -234,4 +235,7 @@
       <div class="menu_button" id="stcig_btn_clear_log">清空日志</div>
     </div>
   </div>
+            </div>
+        </div>
+    </div>
 </div>

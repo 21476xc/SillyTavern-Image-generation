@@ -4,60 +4,65 @@ SillyTavern 第三方扩展：**自定义生图（OpenAI 兼容）**。
 
 在角色扮演过程中，自动或手动调用兼容 OpenAI Images API 的服务生成图片，并插入到对话消息中。支持两种提示词来源模式、SFW 约束、独立提取 API，以及消息级手动重生成。
 
+当前版本：**1.1.3**
+
 ---
 
 ## 安装（重要）
 
-SillyTavern **不会**从任意目录自动扫描插件。必须放进第三方扩展目录，并在扩展页启用。
+### 方式 A：GitHub 链接安装（推荐）
 
-### 正确安装路径
-
-把本仓库**整个文件夹**复制到：
+1. 打开 SillyTavern → **扩展 (Extensions)** 页
+2. 找到 **Install Extension / 安装扩展**，粘贴：
 
 ```text
-SillyTavern/public/scripts/extensions/third-party/<任意文件夹名>
+https://github.com/21476xc/SillyTavern-Image-generation
 ```
 
-推荐文件夹名（任选其一，保持文件夹内有 `manifest.json`）：
+3. 安装成功后会出现 toast：`自定义生图 (OpenAI 兼容)`
+4. 点 **管理扩展 (Manage Extensions)**，在 **Installed Extensions** 列表里找到同名项，确认开关为 **开启**
+5. 关闭管理弹窗后，在扩展设置区（`#extensions_settings2`）找到同名抽屉面板
+6. 也可点聊天输入栏旁的 **魔杖菜单**，里面有「自定义生图 (OpenAI 兼容)」快捷入口
+
+> GitHub 安装后文件夹名通常是 `SillyTavern-Image-generation`，这是正常的，**不必改名**。
+
+### 方式 B：手动复制
+
+把本仓库整个文件夹放到下面任一位置（保持 `manifest.json` 在文件夹根目录）：
 
 ```text
-ST-Custom-ImageGen
+SillyTavern/public/scripts/extensions/third-party/<文件夹名>/
+# 或用户扩展目录（非 global 安装）：
+SillyTavern/data/<用户名>/extensions/<文件夹名>/
+```
+
+推荐文件夹名：
+
+```text
 SillyTavern-Image-generation
+ST-Custom-ImageGen
 ```
 
-例如：
+### 找不到插件时按这个顺序查
 
-```text
-SillyTavern/public/scripts/extensions/third-party/ST-Custom-ImageGen/manifest.json
-SillyTavern/public/scripts/extensions/third-party/ST-Custom-ImageGen/index.js
-SillyTavern/public/scripts/extensions/third-party/ST-Custom-ImageGen/style.css
-SillyTavern/public/scripts/extensions/third-party/ST-Custom-ImageGen/prompts.js
-```
+1. **扩展列表不在左侧常驻**，要在扩展页点 **管理扩展** 才能看到第三方列表
+2. 管理扩展里如果有本扩展但开关关闭 → 先打开，然后 **保存/重载页面**
+3. 浏览器 F12 控制台搜索：`st-custom-imagegen`
+   - 有 `booting from ...` = JS 已加载
+   - 有 `failed to load` / import error = 看报错
+4. 控制台执行：
+   ```js
+   window.STCustomImageGen?.openSettings?.()
+   // 或
+   window.STCustomImageGen?.reinjectSettings?.()
+   ```
+5. 确认安装 toast 出现过；若安装失败，多半是网络/git 或仓库不可达
 
-> 如果你是 `git clone` 本仓库，文件夹名可能是 `SillyTavern-Image-generation`，**也可以直接用这个名字**，不必改成 `ST-Custom-ImageGen`。  
-> 不要只复制 `index.js` 单个文件；不要放到 `data/`、`plugins/`、仓库根目录等错误位置。
+### 设置面板位置
 
-### 启用与找到设置面板
-
-1. **完全重启** SillyTavern（仅刷新有时不够，尤其是新装扩展）。
-2. 打开左侧/顶部的 **扩展 (Extensions)** 页面。
-3. 在第三方扩展列表中找到 **「自定义生图 (OpenAI 兼容)」**，先 **启用/勾选**。
-4. 启用后，到 **扩展设置** 区域查找同名抽屉面板（`自定义生图 (OpenAI 兼容)`）。
-5. 填写 Base URL / API Key / Model，点「测试连接」。
-
-如果扩展列表里完全没有这项：
-
-- 检查 `manifest.json` 是否在 `public/scripts/extensions/third-party/<文件夹>/` 下
-- 打开浏览器控制台 (F12)，搜索 `st-custom-imagegen` 看是否有加载错误
-- 确认 ST 版本支持第三方扩展，且未开启“禁用未验证扩展”之类限制
-
-如果扩展已启用但找不到设置：
-
-- 在扩展设置页向下滚动，查找 `自定义生图`
-- 控制台执行：`window.STCustomImageGen?.reinjectSettings?.()`
-- 看控制台是否打印 `[st-custom-imagegen] booting from ...`
-
-`prompts.js` 会按当前扩展实际路径加载，并回退常见目录名。
+- **扩展设置** 主区域（第三方扩展通常在 `extensions_settings2`）
+- **魔杖菜单** → 自定义生图
+- 控制台 `window.STCustomImageGen.openSettings()`
 
 ---
 
@@ -344,9 +349,9 @@ Content-Type: application/json
 
 ## 版本
 
-当前：`1.1.2`（见 `manifest.json`；本地扩展，无强制联网更新）
+当前：`1.1.3`（见 `manifest.json`；本地扩展，无强制联网更新）
 
-### 1.1.2
+### 1.1.3
 - 修复“安装后找不到”：动态加载 ST API，避免顶层 import 失败导致整扩展不出现
 - 设置面板支持重试/容器监听注入；暴露 `window.STCustomImageGen`
 - 安装路径/仓库文件夹名自适应（含 `SillyTavern-Image-generation`）

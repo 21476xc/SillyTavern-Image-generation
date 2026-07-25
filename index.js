@@ -9,6 +9,11 @@
 
 const MODULE_NAME = 'st-custom-imagegen';
 const DISPLAY_NAME = '自定义生图 (OpenAI 兼容)';
+const EXTENSION_VERSION = '1.1.3';
+/** @type {string|null} */
+let cachedExtensionRelativeName = null;
+/** @type {any} */
+let renderExtensionTemplateAsyncFn = null;
 
 /** @type {any} */
 let stGetContext = null;
@@ -35,22 +40,66 @@ let extension_prompt_types = null;
 /** @type {any} */
 let extension_prompt_roles = null;
 
-function getExtensionBasePath() {
+function getExtensionScriptUrl() {
     try {
         if (typeof import.meta !== 'undefined' && import.meta.url) {
-            return String(import.meta.url).replace(/[^/\\]+$/, '');
+            return String(import.meta.url);
         }
     } catch (_) { /* ignore */ }
     try {
         const scripts = Array.from(document.getElementsByTagName('script'));
         for (const s of scripts) {
             const src = s.src || '';
-            if (/third-party/i.test(src) && /index\.js/i.test(src) && /imagegen|st-custom-imagegen|ST-Custom-ImageGen/i.test(src)) {
-                return src.replace(/index\.js(?:\?.*)?$/i, '');
+            if (/\/scripts\/extensions\/third-party\/[^/]+\/index\.js/i.test(src) && /imagegen|st-custom-imagegen|ST-Custom-ImageGen|SillyTavern-Image-generation/i.test(src)) {
+                return src;
+            }
+        }
+        for (const s of scripts) {
+            const src = s.src || '';
+            if (/\/scripts\/extensions\/third-party\/[^/]+\/index\.js/i.test(src)) {
+                return src;
             }
         }
     } catch (_) { /* ignore */ }
-    return '/scripts/extensions/third-party/ST-Custom-ImageGen/';
+    return '';
+}
+
+/**
+ * ST 通过 GitHub 安装后目录名通常是仓库名：SillyTavern-Image-generation
+ * 也可能是用户手动改过的 ST-Custom-ImageGen。设置模板路径必须与真实目录一致。
+ * @returns {string} e.g. third-party/SillyTavern-Image-generation
+ */
+function getExtensionRelativeName() {
+    if (cachedExtensionRelativeName) return cachedExtensionRelativeName;
+    const scriptUrl = getExtensionScriptUrl();
+    const m = String(scriptUrl).match(/\/scripts\/extensions\/(third-party\/[^/]+)\//i);
+    if (m && m[1]) {
+        cachedExtensionRelativeName = m[1];
+        return cachedExtensionRelativeName;
+    }
+    // Fallback candidates ordered by GitHub install default folder name first
+    cachedExtensionRelativeName = 'third-party/SillyTavern-Image-generation';
+    return cachedExtensionRelativeName;
+}
+
+function getExtensionBasePath() {
+    const scriptUrl = getExtensionScriptUrl();
+    if (scriptUrl) {
+        return scriptUrl.replace(/index\.js(?:\?.*)?$/i, '');
+    }
+    return /scripts/extensions//;
+}
+
+function getExtensionFolderCandidates() {
+    const rel = getExtensionRelativeName();
+    const folder = rel.replace(/^third-party\//, '');
+    return [...new Set([
+        folder,
+        'SillyTavern-Image-generation',
+        'SillyTavern-Image-Generation',
+        'ST-Custom-ImageGen',
+        'st-custom-imagegen',
+    ].filter(Boolean))];
 }
 
 async function loadSillyTavernApis() {
@@ -86,9 +135,10 @@ async function loadSillyTavernApis() {
         }
     }
 
-    stGetContext = extMod?.getContext || window.getContext || null;
+    stGetContext = extMod?.getContext || window.SillyTavern?.getContext || window.getContext || null;
     extension_settings = extMod?.extension_settings || window.extension_settings || {};
     saveSettingsDebounced = extMod?.saveSettingsDebounced || window.saveSettingsDebounced || null;
+    renderExtensionTemplateAsyncFn = extMod?.renderExtensionTemplateAsync || window.renderExtensionTemplateAsync || null;
 
     eventSource = scriptMod?.eventSource || window.eventSource || null;
     event_types = scriptMod?.event_types || window.event_types || {};
@@ -388,8 +438,9 @@ function chatKey() {
 }
 
 function buildSettingsHtml() {
+    // Fallback only: preferred path is settings.html via renderExtensionTemplateAsync
     return `
-<div id="stcig_settings">
+<div id="stcig_settings" class="stcig-settings">
   <div class="stcig-section">
     <h4>总控</h4>
     <div class="stcig-status-bar">
@@ -406,215 +457,31 @@ function buildSettingsHtml() {
       <label class="stcig-inline-check"><input type="checkbox" id="stcig_showMessageButtons"> 消息按钮</label>
     </div>
   </div>
-
   <div class="stcig-section">
-    <h4>生图 API（OpenAI 兼容）</h4>
+    <h4>生图 API</h4>
     <div class="stcig-row">
-      <label class="stcig-field"><span>Base URL</span>
-        <input type="text" id="stcig_apiBaseUrl" placeholder="https://api.openai.com" autocomplete="off">
-      </label>
-      <label class="stcig-field"><span>API Key</span>
-        <input type="password" id="stcig_apiKey" placeholder="sk-..." autocomplete="off">
-      </label>
-    </div>
-    <div class="stcig-row">
-      <label class="stcig-field"><span>Model</span>
-        <input type="text" id="stcig_apiModel" placeholder="dall-e-3 / flux / sd..." autocomplete="off">
-      </label>
-      <label class="stcig-field"><span>Endpoint 路径</span>
-        <input type="text" id="stcig_apiEndpoint" placeholder="/v1/images/generations" autocomplete="off">
-      </label>
-    </div>
-    <div class="stcig-row">
-      <label class="stcig-field"><span>Size</span>
-        <input type="text" id="stcig_size" placeholder="1024x1024" list="stcig_size_list" autocomplete="off">
-        <datalist id="stcig_size_list">
-          <option value="256x256"></option>
-          <option value="512x512"></option>
-          <option value="1024x1024"></option>
-          <option value="1792x1024"></option>
-          <option value="1024x1792"></option>
-        </datalist>
-      </label>
-      <label class="stcig-field"><span>Quality</span>
-        <select id="stcig_quality">
-          <option value="">（不发送）</option>
-          <option value="standard">standard</option>
-          <option value="hd">hd</option>
-          <option value="low">low</option>
-          <option value="medium">medium</option>
-          <option value="high">high</option>
-          <option value="auto">auto</option>
-        </select>
-      </label>
-      <label class="stcig-field"><span>Style</span>
-        <select id="stcig_style">
-          <option value="">（不发送）</option>
-          <option value="vivid">vivid</option>
-          <option value="natural">natural</option>
-        </select>
-      </label>
-      <label class="stcig-field"><span>n</span>
-        <input type="number" id="stcig_n" min="1" max="4" step="1">
-      </label>
-      <label class="stcig-field"><span>response_format</span>
-        <select id="stcig_responseFormat">
-          <option value="url">url</option>
-          <option value="b64_json">b64_json</option>
-          <option value="auto">auto（优先 url）</option>
-        </select>
-      </label>
-    </div>
-    <div class="stcig-row">
-      <label class="stcig-field"><span>额外 JSON Body（可选，合并进请求）</span>
-        <textarea id="stcig_extraBodyJson" placeholder='{"extra":"value"}'></textarea>
-      </label>
-    </div>
-    <div class="stcig-row">
-      <label class="stcig-inline-check"><input type="checkbox" id="stcig_sendNegativeAsField"> 负向提示词优先作为 negative_prompt 字段发送</label>
+      <label class="stcig-field"><span>Base URL</span><input type="text" id="stcig_apiBaseUrl"></label>
+      <label class="stcig-field"><span>API Key</span><input type="password" id="stcig_apiKey"></label>
+      <label class="stcig-field"><span>Model</span><input type="text" id="stcig_apiModel"></label>
+      <label class="stcig-field"><span>Endpoint</span><input type="text" id="stcig_apiEndpoint"></label>
     </div>
     <div class="stcig-actions">
-      <div class="menu_button" id="stcig_btn_test">测试连接</div>
       <div class="menu_button" id="stcig_btn_save">保存设置</div>
+      <div class="menu_button" id="stcig_btn_test">测试连接</div>
     </div>
   </div>
-
   <div class="stcig-section">
-    <h4>提示词模式</h4>
-    <div class="stcig-row">
-      <label class="stcig-field"><span>模式</span>
-        <select id="stcig_promptMode">
-          <option value="main">main：主模型输出 &lt;image_prompt&gt; / ```stcig-prompt```</option>
-          <option value="extractor">extractor：二次模型提取提示词</option>
-        </select>
-      </label>
-    </div>
-    <div class="stcig-row">
-      <label class="stcig-field"><span>主模式注入提示</span>
-        <textarea id="stcig_mainInjectionPrompt"></textarea>
-      </label>
-    </div>
-    <div class="stcig-actions">
-      <div class="menu_button" id="stcig_btn_reset_templates">恢复提示词模板默认</div>
-      <div class="menu_button" id="stcig_btn_load_prompt_defaults">填入 prefix/suffix/negative 默认</div>
-    </div>
-    <div class="stcig-row">
-      <label class="stcig-field"><span>注入深度 depth</span>
-        <input type="number" id="stcig_mainInjectionDepth" min="0" max="99" step="1">
-      </label>
-      <label class="stcig-field"><span>注入位置</span>
-        <select id="stcig_mainInjectionPosition">
-          <option value="in_prompt">IN_PROMPT</option>
-          <option value="in_chat">IN_CHAT</option>
-        </select>
-      </label>
-    </div>
-    <div class="stcig-row">
-      <label class="stcig-inline-check"><input type="checkbox" id="stcig_extractorUseMainCredentials"> 提取器复用生图 API 的 Base/Key</label>
-    </div>
-    <div class="stcig-row">
-      <label class="stcig-field"><span>提取器 Base URL</span>
-        <input type="text" id="stcig_extractorBaseUrl" placeholder="留空则用生图 Base URL" autocomplete="off">
-      </label>
-      <label class="stcig-field"><span>提取器 API Key</span>
-        <input type="password" id="stcig_extractorApiKey" placeholder="留空则用生图 Key" autocomplete="off">
-      </label>
-    </div>
-    <div class="stcig-row">
-      <label class="stcig-field"><span>提取器 Model</span>
-        <input type="text" id="stcig_extractorModel" autocomplete="off">
-      </label>
-      <label class="stcig-field"><span>提取器 Endpoint</span>
-        <input type="text" id="stcig_extractorEndpoint" placeholder="/v1/chat/completions" autocomplete="off">
-      </label>
-    </div>
-    <div class="stcig-row">
-      <label class="stcig-field"><span>提取器系统提示</span>
-        <textarea id="stcig_extractorSystemPrompt"></textarea>
-      </label>
-    </div>
-    <div class="stcig-row">
-      <label class="stcig-field"><span>temperature</span>
-        <input type="number" id="stcig_extractorTemperature" min="0" max="2" step="0.1">
-      </label>
-      <label class="stcig-field"><span>max_tokens</span>
-        <input type="number" id="stcig_extractorMaxTokens" min="32" max="4000" step="1">
-      </label>
-    </div>
-  </div>
-
-  <div class="stcig-section">
-    <h4>提示词处理</h4>
-    <div class="stcig-row">
-      <label class="stcig-field"><span>前缀</span>
-        <textarea id="stcig_promptPrefix" placeholder="加在最终提示词前"></textarea>
-      </label>
-      <label class="stcig-field"><span>后缀</span>
-        <textarea id="stcig_promptSuffix" placeholder="加在最终提示词后"></textarea>
-      </label>
-    </div>
-    <div class="stcig-row">
-      <label class="stcig-field"><span>负向提示词</span>
-        <textarea id="stcig_negativePrompt" placeholder="API 支持则独立字段，否则拼进 prompt"></textarea>
-      </label>
-    </div>
-  </div>
-
-  <div class="stcig-section">
-    <h4>SFW 模式</h4>
-    <div class="stcig-row">
-      <label class="stcig-inline-check"><input type="checkbox" id="stcig_sfwEnabled"> 启用 SFW 约束</label>
-    </div>
-    <div class="stcig-row">
-      <label class="stcig-field"><span>SFW 约束文本</span>
-        <textarea id="stcig_sfwConstraint"></textarea>
-      </label>
-    </div>
-    <div class="stcig-row">
-      <label class="stcig-field"><span>敏感词（逗号分隔）</span>
-        <textarea id="stcig_sfwSensitiveWords"></textarea>
-      </label>
-      <label class="stcig-field"><span>替换为</span>
-        <input type="text" id="stcig_sfwReplaceWith" autocomplete="off">
-      </label>
-    </div>
-  </div>
-
-  <div class="stcig-section">
-    <h4>频率限制</h4>
-    <div class="stcig-row">
-      <label class="stcig-field"><span>冷却（毫秒）</span>
-        <input type="number" id="stcig_cooldownMs" min="0" max="600000" step="100">
-      </label>
-      <label class="stcig-field"><span>每聊天最大自动次数（0=不限）</span>
-        <input type="number" id="stcig_maxAutoPerChat" min="0" max="9999" step="1">
-      </label>
-      <label class="stcig-field"><span>请求超时（毫秒）</span>
-        <input type="number" id="stcig_timeoutMs" min="5000" max="600000" step="1000">
-      </label>
-    </div>
-  </div>
-
-  <div class="stcig-section">
-    <h4>手动生图</h4>
-    <div class="stcig-row">
-      <label class="stcig-field"><span>提示词</span>
-        <textarea id="stcig_manual_prompt" placeholder="直接输入提示词并生成"></textarea>
-      </label>
-    </div>
+    <h4>手动生成 / 日志</h4>
+    <textarea id="stcig_manual_prompt" placeholder="直接输入提示词并生成"></textarea>
     <div class="stcig-actions">
       <div class="menu_button" id="stcig_btn_manual">生成图片</div>
       <div class="menu_button" id="stcig_btn_from_last">从最近 AI 回复提取并生成</div>
       <div class="menu_button" id="stcig_btn_reset_count">重置当前聊天自动计数</div>
-    </div>
-  </div>
-
-  <div class="stcig-section">
-    <h4>日志</h4>
-    <div id="stcig_log" class="stcig-log">（暂无日志）</div>
-    <div class="stcig-actions" style="margin-top:8px;">
       <div class="menu_button" id="stcig_btn_clear_log">清空日志</div>
+      <div class="menu_button" id="stcig_btn_reset_templates">恢复默认模板</div>
+      <div class="menu_button" id="stcig_btn_load_prompt_defaults">载入 prompts.js 默认</div>
     </div>
+    <div id="stcig_log" class="stcig-log">（暂无日志）</div>
   </div>
 </div>`.trim();
 }
@@ -637,9 +504,17 @@ function findSettingsHost() {
     return null;
 }
 
+function settingsPanelExists() {
+    return !!(
+        document.getElementById(`${MODULE_NAME}-settings`)
+        || document.getElementById('stcig_settings')
+        || document.querySelector('[data-stcig="1"]')
+    );
+}
+
 function buildSettingsWrapper(html) {
     const wrap = document.createElement('div');
-    wrap.className = 'extension_container';
+    wrap.className = 'extension_container stcig-settings-root';
     wrap.id = `${MODULE_NAME}-settings`;
     wrap.dataset.stcig = '1';
     wrap.innerHTML = `
@@ -650,7 +525,7 @@ function buildSettingsWrapper(html) {
         </div>
         <div class="inline-drawer-content">
           <div class="stcig-hint" style="margin-bottom:8px;opacity:.85;">
-            在这里配置生图 API。若你是从扩展列表启用后才看到本面板，属正常现象。
+            在这里配置生图 API。安装后请先在「扩展 → 管理扩展」中确认本扩展已启用。
           </div>
           ${html}
         </div>
@@ -659,12 +534,56 @@ function buildSettingsWrapper(html) {
     return wrap;
 }
 
-function injectSettingsPanel({ allowBodyFallback = false } = {}) {
-    if ($('stcig_settings') || document.getElementById(`${MODULE_NAME}-settings`)) {
-        return true;
+async function loadSettingsTemplateHtml() {
+    const names = [
+        getExtensionRelativeName(),
+        ...getExtensionFolderCandidates().map((f) => `third-party/${f}`),
+    ];
+    const uniq = [...new Set(names.filter(Boolean))];
+    const errors = [];
+
+    // Official ST API
+    if (typeof renderExtensionTemplateAsyncFn === 'function') {
+        for (const name of uniq) {
+            try {
+                const html = await renderExtensionTemplateAsyncFn(name, 'settings');
+                if (html && String(html).trim()) {
+                    log('info', `settings 模板已加载: ${name}/settings.html`);
+                    return String(html);
+                }
+            } catch (err) {
+                errors.push(`${name}: ${err?.message || err}`);
+            }
+        }
     }
 
-    const html = buildSettingsHtml();
+    // fetch fallback (user-scoped / third-party both map under /scripts/extensions/)
+    for (const name of uniq) {
+        try {
+            const url = `/scripts/extensions/${name}/settings.html`;
+            const resp = await fetch(url, { cache: 'no-cache' });
+            if (!resp.ok) {
+                errors.push(`${url}: HTTP ${resp.status}`);
+                continue;
+            }
+            const html = await resp.text();
+            if (html && html.trim()) {
+                log('info', `settings 模板已 fetch: ${url}`);
+                return html;
+            }
+        } catch (err) {
+            errors.push(`${name}/fetch: ${err?.message || err}`);
+        }
+    }
+
+    log('warn', 'settings.html 未能加载，使用内置精简面板', errors.slice(0, 6));
+    return null;
+}
+
+function mountSettingsNode(node, { allowBodyFallback = false } = {}) {
+    if (!node) return false;
+    if (settingsPanelExists()) return true;
+
     const host = findSettingsHost();
     if (!host) {
         if (!allowBodyFallback) {
@@ -679,41 +598,70 @@ function injectSettingsPanel({ allowBodyFallback = false } = {}) {
             (document.querySelector('#sheld') || document.body).appendChild(fallback);
             log('warn', '未找到扩展设置容器，已挂到页面兜底区域（请仍优先在“扩展”页查找）');
         }
-        fallback.appendChild(buildSettingsWrapper(html));
-        bindSettingsUi();
-        syncUiFromSettings();
-        return true;
+        fallback.appendChild(node);
+    } else {
+        host.appendChild(node);
+        log('info', '设置面板已注入扩展设置区');
     }
 
-    host.appendChild(buildSettingsWrapper(html));
     bindSettingsUi();
     syncUiFromSettings();
-    log('info', '设置面板已注入扩展设置区');
+    updateStatusBadges();
+    updateModeVisibility();
     return true;
+}
+
+async function injectSettingsPanel({ allowBodyFallback = false } = {}) {
+    if (settingsPanelExists()) return true;
+
+    let templateHtml = null;
+    try {
+        templateHtml = await loadSettingsTemplateHtml();
+    } catch (err) {
+        log('warn', '加载 settings 模板异常', err?.message || err);
+    }
+
+    let node = null;
+    if (templateHtml) {
+        const wrap = document.createElement('div');
+        wrap.innerHTML = templateHtml.trim();
+        node = wrap.firstElementChild || wrap;
+        if (!node.id) node.id = `${MODULE_NAME}-settings`;
+        node.dataset.stcig = '1';
+        if (!node.classList.contains('extension_container')) {
+            node.classList.add('extension_container');
+        }
+    } else {
+        node = buildSettingsWrapper(buildSettingsHtml());
+    }
+
+    return mountSettingsNode(node, { allowBodyFallback });
 }
 
 function scheduleSettingsPanelRetry() {
     let tries = 0;
     const maxTries = 40;
-    const tick = () => {
-        if (document.getElementById(`${MODULE_NAME}-settings`) || $('stcig_settings')) return;
+    const tick = async () => {
+        if (settingsPanelExists()) return;
         tries += 1;
-        const ok = injectSettingsPanel({ allowBodyFallback: tries >= maxTries });
+        const ok = await injectSettingsPanel({ allowBodyFallback: tries >= maxTries });
         if (ok) return;
         if (tries < maxTries) {
-            setTimeout(tick, 500);
+            setTimeout(() => { void tick(); }, 500);
         }
     };
-    setTimeout(tick, 300);
+    setTimeout(() => { void tick(); }, 300);
 
     try {
         const obs = new MutationObserver(() => {
-            if (document.getElementById(`${MODULE_NAME}-settings`) || $('stcig_settings')) {
+            if (settingsPanelExists()) {
                 obs.disconnect();
                 return;
             }
             if (findSettingsHost()) {
-                if (injectSettingsPanel({ allowBodyFallback: false })) obs.disconnect();
+                void injectSettingsPanel({ allowBodyFallback: false }).then((ok) => {
+                    if (ok) obs.disconnect();
+                });
             }
         });
         obs.observe(document.documentElement || document.body, { childList: true, subtree: true });
@@ -721,6 +669,65 @@ function scheduleSettingsPanelRetry() {
     } catch (_) { /* ignore */ }
 }
 
+function openSettingsPanel() {
+    void injectSettingsPanel({ allowBodyFallback: true }).then(() => {
+        const el = document.getElementById(`${MODULE_NAME}-settings`)
+            || document.getElementById('stcig_settings')
+            || document.querySelector('[data-stcig="1"]');
+        if (!el) {
+            toast('warning', '仍未找到设置面板，请打开「扩展」页并向下滚动查找。');
+            return;
+        }
+        try {
+            el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            const drawer = el.querySelector?.('.inline-drawer');
+            const content = el.querySelector?.('.inline-drawer-content');
+            if (content && getComputedStyle(content).display === 'none') {
+                el.querySelector?.('.inline-drawer-toggle')?.click?.();
+            } else if (drawer && !drawer.classList.contains('open')) {
+                el.querySelector?.('.inline-drawer-toggle')?.click?.();
+            }
+        } catch (_) { /* ignore */ }
+        toast('info', '已定位到设置面板');
+    });
+}
+
+function ensureWandMenuButton() {
+    try {
+        const menu = document.getElementById('extensionsMenu')
+            || document.querySelector('#extensionsMenu')
+            || document.querySelector('.extensions_menu');
+        if (!menu) return false;
+        if (document.getElementById('stcig_wand_button')) return true;
+
+        const btn = document.createElement('div');
+        btn.id = 'stcig_wand_button';
+        btn.className = 'list-group-item flex-container flexGap5 interactable';
+        btn.title = DISPLAY_NAME;
+        btn.tabIndex = 0;
+        btn.innerHTML = `<div class="fa-solid fa-image extensionsMenuExtensionButton"></div><span>${DISPLAY_NAME}</span>`;
+        btn.addEventListener('click', (e) => {
+            e.preventDefault?.();
+            e.stopPropagation?.();
+            openSettingsPanel();
+        });
+        menu.appendChild(btn);
+        log('info', '已添加扩展魔杖菜单入口');
+        return true;
+    } catch (err) {
+        log('warn', '添加魔杖菜单失败', err?.message || err);
+        return false;
+    }
+}
+
+function scheduleWandMenuButton() {
+    if (ensureWandMenuButton()) return;
+    let tries = 0;
+    const timer = setInterval(() => {
+        tries += 1;
+        if (ensureWandMenuButton() || tries >= 30) clearInterval(timer);
+    }, 1000);
+}
 function bindSettingsUi() {
     const ids = [
         'enabled', 'autoGenerate', 'onlyAiMessages', 'stripTagsFromDisplay', 'insertAsMarkdown', 'showMessageButtons',
@@ -2074,10 +2081,7 @@ function loadPromptsScript() {
         const base = getExtensionBasePath();
         const candidates = [
             `${base}prompts.js`,
-            '/scripts/extensions/third-party/ST-Custom-ImageGen/prompts.js',
-            '/scripts/extensions/third-party/st-custom-imagegen/prompts.js',
-            '/scripts/extensions/third-party/SillyTavern-Image-generation/prompts.js',
-            '/scripts/extensions/third-party/SillyTavern-Image-Generation/prompts.js',
+            ...getExtensionFolderCandidates().map((f) => `/scripts/extensions/third-party/${f}/prompts.js`),
         ];
         try {
             const scripts = Array.from(document.getElementsByTagName('script'));
@@ -2116,13 +2120,14 @@ async function initExtension() {
         return;
     }
     try {
-        console.log(`[${MODULE_NAME}] booting from`, getExtensionBasePath());
+        console.log(`[${MODULE_NAME}] booting from`, getExtensionBasePath(), 'rel=', getExtensionRelativeName());
         await loadSillyTavernApis();
         loadSettings();
         await loadPromptsScript();
         tryLoadPromptsDefaults();
-        const injected = injectSettingsPanel({ allowBodyFallback: false });
+        const injected = await injectSettingsPanel({ allowBodyFallback: false });
         if (!injected) scheduleSettingsPanelRetry();
+        scheduleWandMenuButton();
         bindEvents();
         bindMessageButtons();
         applyExtensionPromptInjection();
@@ -2132,18 +2137,20 @@ async function initExtension() {
             window.STCustomImageGen = {
                 name: DISPLAY_NAME,
                 module: MODULE_NAME,
-                version: '1.1.2',
+                version: EXTENSION_VERSION,
+                relativeName: getExtensionRelativeName(),
                 getSettings: () => settings,
+                openSettings: () => openSettingsPanel(),
                 reinjectSettings: () => injectSettingsPanel({ allowBodyFallback: true }),
             };
         } catch (_) { /* ignore */ }
-        log('info', `${DISPLAY_NAME} 已加载`);
-        toast('info', `${DISPLAY_NAME} 已加载。请到「扩展」设置中查找本面板。`);
+        log('info', `${DISPLAY_NAME} v${EXTENSION_VERSION} 已加载`);
+        toast('info', `${DISPLAY_NAME} 已加载。路径：扩展 → 管理扩展 / 扩展设置 / 魔杖菜单`);
     } catch (err) {
         console.error(`[${MODULE_NAME}] init failed`, err);
         toast('error', `初始化失败: ${err?.message || err}`);
-        // Still try to show a panel so the extension is discoverable.
         try { scheduleSettingsPanelRetry(); } catch (_) { /* ignore */ }
+        try { scheduleWandMenuButton(); } catch (_) { /* ignore */ }
     }
 }
 
