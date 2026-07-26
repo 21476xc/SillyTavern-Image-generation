@@ -193,7 +193,6 @@ async function loadSillyTavernApis() {
     return { extMod, scriptMod, errors };
 }
 const IMAGE_PROMPT_RE = /<image_prompt>\s*([\s\S]*?)\s*<\/image_prompt>/i;
-const IMAGE_PROMPT_GLOBAL_RE = /<image_prompt>\s*[\s\S]*?\s*<\/image_prompt>/gi;
 
 const DEFAULT_MAIN_INJECTION = [
     '你正在进行角色扮演。除正常叙事外，当本回合出现明确、可绘制的画面时，请在正文末尾追加 1 个生图提示词块。',
@@ -344,11 +343,10 @@ function ensureSettingsBucket() {
 function saveSettings() {
     ensureSettingsBucket();
     extension_settings[MODULE_NAME] = { ...settings };
-    try {
-        saveSettingsDebounced();
-    } catch (_) {
-        try { window.saveSettingsDebounced?.(); } catch (__) { /* ignore */ }
-    }
+    const fn = typeof saveSettingsDebounced === 'function'
+        ? saveSettingsDebounced
+        : window.saveSettingsDebounced;
+    try { fn?.(); } catch (_) { /* ignore */ }
 }
 
 function deepMerge(base, extra) {
@@ -513,19 +511,16 @@ function buildSettingsHtml() {
 
 function findSettingsHost() {
     // 官方第三方扩展优先挂到 #extensions_settings2，其次 #extensions_settings
-    const ordered = [
-        () => document.getElementById('extensions_settings2'),
-        () => document.querySelector('#extensions_settings2'),
-        () => document.getElementById('extensions_settings'),
-        () => document.querySelector('#extensions_settings'),
-        () => document.querySelector('#extensions_settings2 .extensions_block'),
-        () => document.querySelector('#extensions_settings .extensions_block'),
-        () => document.getElementById('rm_extensions_block'),
-        () => document.querySelector('#rm_extensions_block'),
+    const selectors = [
+        '#extensions_settings2',
+        '#extensions_settings',
+        '#extensions_settings2 .extensions_block',
+        '#extensions_settings .extensions_block',
+        '#rm_extensions_block',
     ];
-    for (const get of ordered) {
+    for (const sel of selectors) {
         try {
-            const host = get();
+            const host = document.querySelector(sel);
             if (host) return host;
         } catch (_) { /* ignore */ }
     }
@@ -559,7 +554,7 @@ function settingsPanelExists() {
 function relocateSettingsPanelIfNeeded() {
     const root = getMountedSettingsRoot();
     if (!root) return false;
-    const preferred = document.getElementById('extensions_settings2') || document.querySelector('#extensions_settings2');
+    const preferred = document.getElementById('extensions_settings2');
     if (!preferred) return false;
     if (preferred.contains(root)) return false;
     try {
@@ -782,6 +777,12 @@ function scheduleSettingsPanelRetry() {
         const obs = new MutationObserver(() => {
             if (settingsPanelExists()) {
                 relocateSettingsPanelIfNeeded();
+                // 面板已存在且位于首选容器时停止观察，避免长时间空转
+                const preferred = document.getElementById('extensions_settings2');
+                const root = getMountedSettingsRoot();
+                if (preferred && root && preferred.contains(root)) {
+                    obs.disconnect();
+                }
                 return;
             }
             if (!findSettingsHost()) return;
@@ -840,7 +841,6 @@ function openSettingsPanel() {
 function ensureWandMenuButton() {
     try {
         const menu = document.getElementById('extensionsMenu')
-            || document.querySelector('#extensionsMenu')
             || document.querySelector('.extensions_menu');
         if (!menu) return false;
         if (document.getElementById('stcig_wand_button')) return true;
@@ -962,63 +962,67 @@ function bindSettingsUi() {
 }
 
 function readUiIntoSettings() {
-    const bool = (id) => !!$(id)?.checked;
-    const val = (id) => $(id)?.value ?? '';
+    // Fallback to current setting when an input is absent (e.g. minimal built-in panel),
+    // otherwise a save from the reduced panel would wipe fields it does not render.
+    const bool = (id, cur) => { const el = $(id); return el ? !!el.checked : !!cur; };
+    const val = (id, cur) => { const el = $(id); return el ? el.value : cur; };
     const num = (id, fallback) => {
-        const n = Number($(id)?.value);
+        const el = $(id);
+        if (!el) return fallback;
+        const n = Number(el.value);
         return Number.isFinite(n) ? n : fallback;
     };
 
-    settings.enabled = bool('stcig_enabled');
-    settings.autoGenerate = bool('stcig_autoGenerate');
-    settings.onlyAiMessages = bool('stcig_onlyAiMessages');
-    settings.stripTagsFromDisplay = bool('stcig_stripTagsFromDisplay');
-    settings.insertAsMarkdown = bool('stcig_insertAsMarkdown');
-    settings.showMessageButtons = bool('stcig_showMessageButtons');
+    settings.enabled = bool('stcig_enabled', settings.enabled);
+    settings.autoGenerate = bool('stcig_autoGenerate', settings.autoGenerate);
+    settings.onlyAiMessages = bool('stcig_onlyAiMessages', settings.onlyAiMessages);
+    settings.stripTagsFromDisplay = bool('stcig_stripTagsFromDisplay', settings.stripTagsFromDisplay);
+    settings.insertAsMarkdown = bool('stcig_insertAsMarkdown', settings.insertAsMarkdown);
+    settings.showMessageButtons = bool('stcig_showMessageButtons', settings.showMessageButtons);
 
-    settings.apiBaseUrl = val('stcig_apiBaseUrl').trim();
-    settings.apiKey = val('stcig_apiKey');
-    settings.apiModel = val('stcig_apiModel').trim();
-    settings.apiEndpoint = val('stcig_apiEndpoint').trim() || '/v1/images/generations';
-    settings.size = val('stcig_size').trim();
-    settings.quality = val('stcig_quality');
-    settings.style = val('stcig_style');
-    settings.n = clampInt(num('stcig_n', 1), 1, 4, 1);
-    settings.responseFormat = normalizeEnum(val('stcig_responseFormat') || 'url', ['url', 'b64_json', 'auto'], 'url');
-    settings.extraBodyJson = val('stcig_extraBodyJson');
-    settings.sendNegativeAsField = bool('stcig_sendNegativeAsField');
+    settings.apiBaseUrl = String(val('stcig_apiBaseUrl', settings.apiBaseUrl) ?? '').trim();
+    settings.apiKey = val('stcig_apiKey', settings.apiKey) ?? '';
+    settings.apiModel = String(val('stcig_apiModel', settings.apiModel) ?? '').trim();
+    settings.apiEndpoint = String(val('stcig_apiEndpoint', settings.apiEndpoint) ?? '').trim() || '/v1/images/generations';
+    settings.size = String(val('stcig_size', settings.size) ?? '').trim();
+    settings.quality = val('stcig_quality', settings.quality) ?? '';
+    settings.style = val('stcig_style', settings.style) ?? '';
+    settings.n = clampInt(num('stcig_n', settings.n), 1, 4, 1);
+    settings.responseFormat = normalizeEnum(val('stcig_responseFormat', settings.responseFormat) || 'url', ['url', 'b64_json', 'auto'], 'url');
+    settings.extraBodyJson = val('stcig_extraBodyJson', settings.extraBodyJson) ?? '';
+    settings.sendNegativeAsField = bool('stcig_sendNegativeAsField', settings.sendNegativeAsField);
 
-    settings.promptMode = normalizeEnum(val('stcig_promptMode') || 'main', ['main', 'extractor'], 'main');
-    settings.mainInjectionPrompt = val('stcig_mainInjectionPrompt');
-    settings.mainInjectionDepth = clampInt(num('stcig_mainInjectionDepth', 0), 0, 99, 0);
+    settings.promptMode = normalizeEnum(val('stcig_promptMode', settings.promptMode) || 'main', ['main', 'extractor'], 'main');
+    settings.mainInjectionPrompt = val('stcig_mainInjectionPrompt', settings.mainInjectionPrompt) ?? '';
+    settings.mainInjectionDepth = clampInt(num('stcig_mainInjectionDepth', settings.mainInjectionDepth), 0, 99, 0);
     settings.mainInjectionPosition = normalizeEnum(
-        val('stcig_mainInjectionPosition') || 'in_prompt',
+        val('stcig_mainInjectionPosition', settings.mainInjectionPosition) || 'in_prompt',
         ['in_prompt', 'in_chat'],
         'in_prompt',
     );
 
-    settings.extractorUseMainCredentials = bool('stcig_extractorUseMainCredentials');
-    settings.extractorBaseUrl = val('stcig_extractorBaseUrl').trim();
-    settings.extractorApiKey = val('stcig_extractorApiKey');
-    settings.extractorModel = val('stcig_extractorModel').trim();
-    settings.extractorEndpoint = val('stcig_extractorEndpoint').trim() || '/v1/chat/completions';
-    settings.extractorSystemPrompt = val('stcig_extractorSystemPrompt');
-    settings.extractorTemperature = clampNumber(num('stcig_extractorTemperature', 0.4), 0, 2, 0.4);
-    settings.extractorMaxTokens = clampInt(num('stcig_extractorMaxTokens', 400), 32, 4000, 400);
+    settings.extractorUseMainCredentials = bool('stcig_extractorUseMainCredentials', settings.extractorUseMainCredentials);
+    settings.extractorBaseUrl = String(val('stcig_extractorBaseUrl', settings.extractorBaseUrl) ?? '').trim();
+    settings.extractorApiKey = val('stcig_extractorApiKey', settings.extractorApiKey) ?? '';
+    settings.extractorModel = String(val('stcig_extractorModel', settings.extractorModel) ?? '').trim();
+    settings.extractorEndpoint = String(val('stcig_extractorEndpoint', settings.extractorEndpoint) ?? '').trim() || '/v1/chat/completions';
+    settings.extractorSystemPrompt = val('stcig_extractorSystemPrompt', settings.extractorSystemPrompt) ?? '';
+    settings.extractorTemperature = clampNumber(num('stcig_extractorTemperature', settings.extractorTemperature), 0, 2, 0.4);
+    settings.extractorMaxTokens = clampInt(num('stcig_extractorMaxTokens', settings.extractorMaxTokens), 32, 4000, 400);
 
-    settings.promptPrefix = val('stcig_promptPrefix');
-    settings.promptSuffix = val('stcig_promptSuffix');
-    settings.negativePrompt = val('stcig_negativePrompt');
+    settings.promptPrefix = val('stcig_promptPrefix', settings.promptPrefix) ?? '';
+    settings.promptSuffix = val('stcig_promptSuffix', settings.promptSuffix) ?? '';
+    settings.negativePrompt = val('stcig_negativePrompt', settings.negativePrompt) ?? '';
 
-    settings.sfwEnabled = bool('stcig_sfwEnabled');
-    settings.sfwConstraint = val('stcig_sfwConstraint');
-    settings.sfwSensitiveWords = val('stcig_sfwSensitiveWords');
-    settings.sfwReplaceWith = val('stcig_sfwReplaceWith');
+    settings.sfwEnabled = bool('stcig_sfwEnabled', settings.sfwEnabled);
+    settings.sfwConstraint = val('stcig_sfwConstraint', settings.sfwConstraint) ?? '';
+    settings.sfwSensitiveWords = val('stcig_sfwSensitiveWords', settings.sfwSensitiveWords) ?? '';
+    settings.sfwReplaceWith = val('stcig_sfwReplaceWith', settings.sfwReplaceWith) ?? '';
 
-    settings.cooldownMs = clampInt(num('stcig_cooldownMs', 3000), 0, 600000, 3000);
-    settings.maxAutoPerChat = clampInt(num('stcig_maxAutoPerChat', 0), 0, 9999, 0);
-    settings.timeoutMs = clampInt(num('stcig_timeoutMs', 120000), 5000, 600000, 120000);
-    settings.manualPrompt = val('stcig_manual_prompt');
+    settings.cooldownMs = clampInt(num('stcig_cooldownMs', settings.cooldownMs), 0, 600000, 3000);
+    settings.maxAutoPerChat = clampInt(num('stcig_maxAutoPerChat', settings.maxAutoPerChat), 0, 9999, 0);
+    settings.timeoutMs = clampInt(num('stcig_timeoutMs', settings.timeoutMs), 5000, 600000, 120000);
+    settings.manualPrompt = val('stcig_manual_prompt', settings.manualPrompt) ?? '';
 }
 
 function syncUiFromSettings() {
@@ -1298,6 +1302,12 @@ function extractTaggedPrompt(text) {
     // also accept ```stcig-prompt fences from prompts.js
     const fence = src.match(/```stcig-prompt\s*([\s\S]*?)```/i);
     return fence ? fence[1].trim() : '';
+}
+
+/** True when the text contains an <image_prompt> tag or a ```stcig-prompt fence. */
+function containsImagePromptBlock(text) {
+    const s = String(text || '');
+    return /<image_prompt>[\s\S]*?<\/image_prompt>/i.test(s) || /```stcig-prompt/i.test(s);
 }
 
 function stripImagePromptTags(text) {
@@ -1637,6 +1647,21 @@ function populateModelSelectors(models, { selectCurrent = true } = {}) {
     return Math.max(n1, n2, source.length);
 }
 
+/** Prefill the main image model from a freshly fetched list when it is still empty. */
+function prefillApiModelIfEmpty(models) {
+    if (settings.apiModel || !Array.isArray(models) || !models.length) return;
+    settings.apiModel = models[0];
+    const el = $('stcig_apiModel');
+    if (el) el.value = models[0];
+    syncModelSelectToValue('stcig_apiModel_select', models[0]);
+    saveSettings();
+}
+
+/** Cap the /models probe timeout so a slow gateway does not hold the UI for minutes. */
+function modelsFetchTimeoutMs() {
+    return Math.min(settings.timeoutMs || 120000, 30000);
+}
+
 async function fetchModelsOnly() {
     readUiIntoSettings();
     saveSettings();
@@ -1648,16 +1673,10 @@ async function fetchModelsOnly() {
     }
     try {
         toast('info', '正在获取模型列表...');
-        const result = await fetchModelList(base, key, { timeoutMs: Math.min(settings.timeoutMs || 120000, 30000) });
+        const result = await fetchModelList(base, key, { timeoutMs: modelsFetchTimeoutMs() });
         const models = result.models || [];
         populateModelSelectors(models, { selectCurrent: true });
-        if (!settings.apiModel && models.length) {
-            settings.apiModel = models[0];
-            const el = $('stcig_apiModel');
-            if (el) el.value = models[0];
-            syncModelSelectToValue('stcig_apiModel_select', models[0]);
-            saveSettings();
-        }
+        prefillApiModelIfEmpty(models);
         toast('success', `已加载 ${models.length} 个模型`);
         log('info', `模型列表获取成功（${models.length}）`, { url: result.url, sample: models.slice(0, 12) });
     } catch (err) {
@@ -1718,6 +1737,36 @@ function extractApiErrorMessage(data, statusText, status) {
     return `HTTP ${status || '?'}`;
 }
 
+/**
+ * Interpret a non-JSON response body. Some gateways return bare base64,
+ * data URIs or plain image URLs as text/plain.
+ */
+function parseLooseResponseText(text, { allowUrlSafeB64 = false } = {}) {
+    try {
+        return text ? JSON.parse(text) : null;
+    } catch (_) {
+        const plain = String(text || '').trim();
+        const b64Re = allowUrlSafeB64 ? /^[A-Za-z0-9+/=\s_-]+$/ : /^[A-Za-z0-9+/=\s]+$/;
+        if (plain && (
+            plain.startsWith('data:image/')
+            || /^https?:\/\//i.test(plain)
+            || (b64Re.test(plain) && plain.replace(/\s+/g, '').length > 64)
+        )) {
+            return plain;
+        }
+        return { raw: text };
+    }
+}
+
+function throwHttpError(res, data, method, url) {
+    const msg = extractApiErrorMessage(data, res.statusText, res.status);
+    const err = new Error(`${msg} (${method} ${url})`);
+    err.status = res.status;
+    err.data = data;
+    err.url = url;
+    throw err;
+}
+
 async function fetchJson(url, { method = 'POST', headers = {}, body, timeoutMs, acceptBinaryImage = false } = {}) {
     const controller = new AbortController();
     const ms = timeoutMs ?? settings.timeoutMs ?? 120000;
@@ -1766,54 +1815,16 @@ async function fetchJson(url, { method = 'POST', headers = {}, body, timeoutMs, 
             }
 
             const text = new TextDecoder('utf-8').decode(bytes);
-            let data = null;
-            try { data = text ? JSON.parse(text) : null; } catch (_) {
-                const plain = String(text || '').trim();
-                if (plain && (
-                    plain.startsWith('data:image/')
-                    || /^https?:\/\//i.test(plain)
-                    || (/^[A-Za-z0-9+/=\s_-]+$/.test(plain) && plain.replace(/\s+/g, '').length > 64)
-                )) {
-                    data = plain;
-                } else {
-                    data = { raw: text };
-                }
-            }
-            if (!res.ok) {
-                const msg = extractApiErrorMessage(data, res.statusText, res.status);
-                const err = new Error(`${msg} (${method} ${url})`);
-                err.status = res.status;
-                err.data = data;
-                err.url = url;
-                throw err;
-            }
+            const data = parseLooseResponseText(text, { allowUrlSafeB64: true });
+            if (!res.ok) throwHttpError(res, data, method, url);
             return data;
         }
 
         const text = await res.text();
-        let data = null;
-        try { data = text ? JSON.parse(text) : null; } catch (_) {
-            // Some gateways return bare base64 / data URI / image URL as plain text.
-            const plain = String(text || '').trim();
-            if (plain && (
-                plain.startsWith('data:image/')
-                || /^https?:\/\//i.test(plain)
-                || (/^[A-Za-z0-9+/=\s]+$/.test(plain) && plain.replace(/\s+/g, '').length > 64)
-            )) {
-                data = plain;
-            } else {
-                data = { raw: text };
-            }
-        }
-        if (!res.ok) {
-            const msg = extractApiErrorMessage(data, res.statusText, res.status);
-            const err = new Error(`${msg} (${method} ${url})`);
-            err.status = res.status;
-            err.data = data;
-            err.url = url;
-            throw err;
-        }
-        return data;    } catch (err) {
+        const data = parseLooseResponseText(text, { allowUrlSafeB64: false });
+        if (!res.ok) throwHttpError(res, data, method, url);
+        return data;
+    } catch (err) {
         if (err?.name === 'AbortError' || controller.signal.aborted) {
             const timeoutErr = new Error(`请求超时（${ms}ms）：${url}`);
             timeoutErr.code = 'TIMEOUT';
@@ -1903,7 +1914,12 @@ function lookLikeBase64Image(s) {
     if (raw.length < 64) return false;
     if (!/^[A-Za-z0-9+/=_-]+$/.test(raw)) return false;
     // Heuristic: decoded image headers often start with iVBOR (PNG) / /9j/ (JPEG) / R0lGOD (GIF) / UklGR (WEBP)
-    return /^(iVBOR|\/9j\/|R0lGOD|UklGR|Qk[0-9A-Za-z]|PHN2Zy)/.test(raw) || raw.length > 200;
+    if (/^(iVBOR|\/9j\/|R0lGOD|UklGR|Qk[0-9A-Za-z]|PHN2Zy)/.test(raw)) return true;
+    // Fallback for unrecognized headers: require enough length to plausibly be image bytes,
+    // and reject pure-hex strings (API tokens / hashes) that would otherwise false-positive.
+    if (raw.length <= 1024) return false;
+    if (/^[0-9a-fA-F]+$/.test(raw)) return false;
+    return true;
 }
 
 function pickFirstString(...vals) {
@@ -2285,7 +2301,6 @@ function collectImageBags(data) {
     pushArr(data.output?.data);
     pushArr(data.response?.data);
     pushArr(data.response?.images);
-    pushArr(data.candidates);
     // Gemini generateContent
     pushArr(data.candidates?.[0]?.content?.parts);
     pushArr(data.candidates?.[0]?.content?.Parts);
@@ -2565,10 +2580,11 @@ function queuePendingAuto(messageIndex, fp, reason) {
 
 async function persistChat({ preferImmediate = false } = {}) {
     let saved = false;
-    const tryCall = async (fn, label) => {
+    // thisArg: window.* functions may rely on `this === window`; bare references pass undefined.
+    const tryCall = async (fn, label, thisArg) => {
         if (typeof fn !== 'function') return false;
         try {
-            await fn();
+            await fn.call(thisArg);
             saved = true;
             return true;
         } catch (err) {
@@ -2579,8 +2595,8 @@ async function persistChat({ preferImmediate = false } = {}) {
 
     if (preferImmediate) {
         if (await tryCall(saveChatConditional, 'saveChatConditional')) return true;
-        if (await tryCall(window.saveChatConditional, 'window.saveChatConditional')) return true;
-        if (await tryCall(window.saveChat, 'window.saveChat')) return true;
+        if (await tryCall(window.saveChatConditional, 'window.saveChatConditional', window)) return true;
+        if (await tryCall(window.saveChat, 'window.saveChat', window)) return true;
     }
 
     try {
@@ -2595,9 +2611,9 @@ async function persistChat({ preferImmediate = false } = {}) {
 
     if (!saved) {
         if (await tryCall(saveChatConditional, 'saveChatConditional')) return true;
-        if (await tryCall(window.saveChatConditional, 'window.saveChatConditional')) return true;
-        if (await tryCall(window.saveChatDebounced, 'window.saveChatDebounced')) return true;
-        if (await tryCall(window.saveChat, 'window.saveChat')) return true;
+        if (await tryCall(window.saveChatConditional, 'window.saveChatConditional', window)) return true;
+        if (await tryCall(window.saveChatDebounced, 'window.saveChatDebounced', window)) return true;
+        if (await tryCall(window.saveChat, 'window.saveChat', window)) return true;
     }
 
     if (!saved) log('warn', '未找到可用的聊天保存方法');
@@ -2633,24 +2649,17 @@ async function insertImageToMessage(messageIndex, imageInfo, usedPrompt) {
     mes.extra.stcig.lastUrl = imageInfo.url || null;
     mes.extra.stcig.updatedAt = Date.now();
 
+    // Strip prompt blocks first, then append the image exactly once.
+    if (settings.stripTagsFromDisplay && containsImagePromptBlock(mes.mes)) {
+        mes.mes = stripImagePromptTags(mes.mes);
+    }
     if (settings.insertAsMarkdown) {
-        const md = buildMarkdownImage(imageUrl, 'stcig');
         if (!String(mes.mes || '').includes(imageUrl)) {
-            mes.mes = `${String(mes.mes || '').trim()}\n\n${md}`.trim();
+            mes.mes = `${String(mes.mes || '').trim()}\n\n${buildMarkdownImage(imageUrl, 'stcig')}`.trim();
         }
     } else {
         mes.extra.image = imageUrl;
         mes.extra.inline_image = true;
-    }
-
-    if (settings.stripTagsFromDisplay) {
-        const rawMes = String(mes.mes || '');
-        if (/<image_prompt>[\s\S]*?<\/image_prompt>/i.test(rawMes) || /```stcig-prompt/i.test(rawMes)) {
-            mes.mes = stripImagePromptTags(mes.mes);
-            if (settings.insertAsMarkdown && !String(mes.mes || '').includes(imageUrl)) {
-                mes.mes = `${String(mes.mes || '').trim()}\n\n${buildMarkdownImage(imageUrl, 'stcig')}`.trim();
-            }
-        }
     }
 
     const ok = await persistChat({ preferImmediate: true });
@@ -2661,7 +2670,9 @@ async function insertImageToMessage(messageIndex, imageInfo, usedPrompt) {
 async function appendStandaloneImageMessage(imageInfo, usedPrompt) {
     const imageUrl = imageInfo.dataUri || imageInfo.url;
     const md = buildMarkdownImage(imageUrl, 'stcig');
-    const text = `${md}\n\n<!-- stcig prompt: ${escapeHtml(usedPrompt).slice(0, 500)} -->`;
+    // HTML comments must not contain "--"; escapeHtml alone does not prevent premature comment close.
+    const commentSafePrompt = escapeHtml(usedPrompt).replace(/-{2,}/g, '-').slice(0, 500);
+    const text = `${md}\n\n<!-- stcig prompt: ${commentSafePrompt} -->`;
 
     const ctx = getContextSafe();
     const chat = ctx.chat || window.chat;
@@ -2702,21 +2713,10 @@ async function refreshMessageDom(messageIndex, mes, imageUrl) {
                 if (html) {
                     textEl.innerHTML = html;
                 } else if (settings.insertAsMarkdown && !textEl.innerHTML.includes(imageUrl)) {
-                    const img = document.createElement('img');
-                    img.src = imageUrl;
-                    img.alt = 'stcig';
-                    img.className = 'stcig-generated-image';
-                    textEl.appendChild(img);
+                    textEl.appendChild(createGeneratedImageEl(imageUrl));
                 }
-            }
-            if (!settings.insertAsMarkdown) {
-                const textNode = root.querySelector('.mes_text');
-                if (textNode && !textNode.querySelector('img.stcig-generated-image')) {
-                    const img = document.createElement('img');
-                    img.src = imageUrl;
-                    img.alt = 'stcig';
-                    img.className = 'stcig-generated-image';
-                    textNode.appendChild(img);
+                if (!settings.insertAsMarkdown && !textEl.querySelector('img.stcig-generated-image')) {
+                    textEl.appendChild(createGeneratedImageEl(imageUrl));
                 }
             }
             ensureMessageButtons(root, messageIndex);
@@ -2729,6 +2729,14 @@ async function refreshMessageDom(messageIndex, mes, imageUrl) {
     try {
         if (typeof reloadCurrentChat === 'function') await reloadCurrentChat();
     } catch (_) { /* ignore */ }
+}
+
+function createGeneratedImageEl(imageUrl) {
+    const img = document.createElement('img');
+    img.src = imageUrl;
+    img.alt = 'stcig';
+    img.className = 'stcig-generated-image';
+    return img;
 }
 
 function canAutoGenerate() {
@@ -2775,16 +2783,12 @@ async function generateAndInsert(opts = {}) {
         if (!rawPrompt) {
             const messageText = opts.messageText || '';
             const isManual = source === 'manual' || !!opts.force;
+            // extractor 模式 / 手动兜底路径会在无标签时调用提取器；
+            // callExtractorApi 失败会抛错，无需再次调用（避免重复网络请求）。
             rawPrompt = await extractPromptFromMessage(messageText, {
                 forceExtractor: false,
                 allowExtractorFallback: settings.promptMode === 'extractor' || isManual,
             });
-            if (!rawPrompt && settings.promptMode === 'extractor') {
-                rawPrompt = await extractPromptFromMessage(messageText, {
-                    forceExtractor: true,
-                    allowExtractorFallback: true,
-                });
-            }
         }
         if (!rawPrompt) {
             throw new Error('未得到生图提示词（主模式需 <image_prompt> 或 ```stcig-prompt``` 块，或切换 extractor）');
@@ -2898,8 +2902,7 @@ async function handleIncomingMessage(messageIndex, { force = false, source = 'au
 
 function maybeStripTagsInDom(messageIndex, mes) {
     try {
-        const raw = String(mes.mes || '');
-        if (!/<image_prompt>[\s\S]*?<\/image_prompt>/i.test(raw) && !/```stcig-prompt/i.test(raw)) return;
+        if (!containsImagePromptBlock(mes.mes)) return;
         if (settings.autoGenerate) return;
         const root = document.querySelector(`#chat .mes[mesid="${messageIndex}"]`);
         const textEl = root?.querySelector('.mes_text');
@@ -2944,19 +2947,13 @@ async function testConnection() {
         let modelsOk = false;
         let modelsError = '';
         try {
-            const result = await fetchModelList(base, key, { timeoutMs: Math.min(settings.timeoutMs || 120000, 30000) });
+            const result = await fetchModelList(base, key, { timeoutMs: modelsFetchTimeoutMs() });
             models = result.models || [];
             modelsUrl = result.url || '';
             modelsOk = true;
             populateModelSelectors(models, { selectCurrent: true });
             // If current model empty and list has items, prefill first.
-            if (!settings.apiModel && models.length) {
-                settings.apiModel = models[0];
-                const el = $('stcig_apiModel');
-                if (el) el.value = models[0];
-                syncModelSelectToValue('stcig_apiModel_select', models[0]);
-                saveSettings();
-            }
+            prefillApiModelIfEmpty(models);
             log('info', `模型列表获取成功（${models.length}）`, { modelsUrl, sample: models.slice(0, 12) });
         } catch (err) {
             modelsError = err?.message || String(err);
@@ -3042,7 +3039,8 @@ function ensureMessageButtons(root, messageIndex) {
 
 function bindMessageButtons() {
     if (!settings.showMessageButtons) return;
-    const nodes = document.querySelectorAll('#chat .mes, .mes');
+    // '.mes' alone already matches '#chat .mes'; a single selector avoids double work.
+    const nodes = document.querySelectorAll('.mes');
     nodes.forEach((mesEl) => {
         const mesId = mesEl.getAttribute('mesid') ?? mesEl.dataset.mesid;
         if (mesId == null) return;
@@ -3147,7 +3145,11 @@ function loadPromptsScript() {
                 log('info', `prompts.js 已加载: ${uniq[i]}`);
                 resolve(true);
             };
-            script.onerror = () => tryNext(i + 1);
+            script.onerror = () => {
+                // Remove the dead script node before trying the next candidate.
+                try { script.remove(); } catch (_) { /* ignore */ }
+                tryNext(i + 1);
+            };
             document.head.appendChild(script);
         };
         tryNext(0);

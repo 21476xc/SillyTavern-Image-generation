@@ -9,20 +9,14 @@ const vm = require('vm');
 const indexPath = path.join(__dirname, 'index.js');
 const src = fs.readFileSync(indexPath, 'utf8');
 
-const start = src.indexOf('function arrayBufferToBase64');
-const end = src.indexOf('async function callExtractorApi');
-if (start < 0 || end < 0) {
-  console.error('Could not locate helper block');
-  process.exit(1);
-}
-
-// Include helpers from arrayBufferToBase64 through findImageRefDeep/parseImageResponse,
-// but stop before callExtractorApi. We also need fetchJson? No, pure parse only.
-// Actually parseImageResponse is after callExtractorApi/buildImageRequestBody/coerce...
-// Better extract from arrayBufferToBase64 to end of parseImageResponse.
-
+// Extract the pure-parsing helper block: from arrayBufferToBase64 up to (not
+// including) callImageApi. It contains everything parseImageResponse needs.
 const parseStart = src.indexOf('function arrayBufferToBase64');
 const parseEnd = src.indexOf('async function callImageApi');
+if (parseStart < 0 || parseEnd < 0 || parseEnd <= parseStart) {
+  console.error('Could not locate helper block in index.js');
+  process.exit(1);
+}
 const helperSrc = src.slice(parseStart, parseEnd);
 
 const sandbox = {
@@ -119,6 +113,81 @@ const cases = [
     data: { response: { result: { artifacts: [{ media: { image_base64: tinyPngB64, mime: 'image/png' } }] } } },
     expectDataUriPrefix: 'data:image/png;base64,',
   },
+  // --- edge cases ---
+  {
+    name: 'bare url string response',
+    data: 'https://cdn.example.com/plain.png',
+    expectUrl: 'https://cdn.example.com/plain.png',
+  },
+  {
+    name: 'bare data-uri string response',
+    data: 'data:image/png;base64,' + tinyPngB64,
+    expectDataUriPrefix: 'data:image/png;base64,',
+  },
+  {
+    name: 'bare base64 string response',
+    data: tinyPngB64,
+    expectDataUriPrefix: 'data:image/png;base64,',
+  },
+  {
+    name: 'multi-image data[] picks first',
+    data: {
+      data: [
+        { url: 'https://cdn.example.com/first.png' },
+        { url: 'https://cdn.example.com/second.png' },
+      ],
+    },
+    expectUrl: 'https://cdn.example.com/first.png',
+  },
+  {
+    name: 'mixed b64 + url in data[] picks first (b64)',
+    data: {
+      data: [
+        { b64_json: tinyPngB64 },
+        { url: 'https://cdn.example.com/second.png' },
+      ],
+    },
+    expectDataUriPrefix: 'data:image/png;base64,',
+  },
+  {
+    name: 'protocol-relative url normalized to https',
+    data: { data: [{ url: '//cdn.example.com/rel.png' }] },
+    expectUrl: 'https://cdn.example.com/rel.png',
+  },
+  {
+    name: 'base64 with data-uri prefix inside b64_json',
+    data: { data: [{ b64_json: 'data:image/webp;base64,' + tinyPngB64 }] },
+    expectDataUriPrefix: 'data:image/webp;base64,',
+  },
+  {
+    name: 'url-safe base64 converted to standard',
+    data: { data: [{ b64_json: tinyPngB64.replace(/\+/g, '-').replace(/\//g, '_') }] },
+    expectDataUriPrefix: 'data:image/png;base64,',
+  },
+  {
+    name: 'top-level url alias',
+    data: { url: 'https://cdn.example.com/top.png' },
+    expectUrl: 'https://cdn.example.com/top.png',
+  },
+  {
+    name: 'top-level b64_json alias',
+    data: { b64_json: tinyPngB64 },
+    expectDataUriPrefix: 'data:image/png;base64,',
+  },
+  {
+    name: 'base64 in "url" field of data[]',
+    data: { data: [{ url: tinyPngB64 }] },
+    expectDataUriPrefix: 'data:image/png;base64,',
+  },
+];
+
+// error cases: parseImageResponse must throw
+const errorCases = [
+  { name: 'null response', data: null },
+  { name: 'empty string response', data: '' },
+  { name: 'empty object response', data: {} },
+  { name: 'empty data[] response', data: { data: [] } },
+  { name: 'text-only chat response', data: { choices: [{ message: { content: 'plain words only' } }] } },
 ];
 
 let failed = 0;
@@ -135,6 +204,16 @@ for (const c of cases) {
   } catch (err) {
     failed += 1;
     console.error('FAIL', c.name, err.message);
+  }
+}
+
+for (const c of errorCases) {
+  try {
+    const hit = parseImageResponse(c.data);
+    failed += 1;
+    console.error('FAIL', c.name, 'should throw, got', JSON.stringify(hit).slice(0, 80));
+  } catch (err) {
+    console.log('PASS', c.name, '(threw)');
   }
 }
 

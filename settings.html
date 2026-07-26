@@ -5,7 +5,7 @@
             <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
         </div>
         <div class="inline-drawer-content">
-            <div class="stcig-hint" style="margin-bottom:8px;opacity:.85;">
+            <div class="stcig-hint">
                 配置 OpenAI 兼容生图 API。安装后请先在「扩展 → 管理扩展」中确认本扩展已启用。
             </div>
             <div id="stcig_settings" class="stcig-settings">
@@ -42,7 +42,7 @@
           <select id="stcig_apiModel_select" class="stcig-model-select" aria-label="生图模型列表">
             <option value="">（获取列表后可下拉选择）</option>
           </select>
-          <input type="text" id="stcig_apiModel" placeholder="dall-e-3 / flux / gemini... 可手输任意模型名" autocomplete="off">
+          <input type="text" id="stcig_apiModel" placeholder="dall-e-3 / flux / gemini... 可手输任意模型名" autocomplete="off" aria-label="生图模型名（可手动输入）">
         </div>
         <div id="stcig_model_fetch_hint" class="stcig-hint">可用「获取模型列表」或「测试连接」拉取 API 支持的模型；手机端请用上方下拉，也可直接手输。</div>
       </label>
@@ -99,9 +99,9 @@
       <label class="stcig-inline-check"><input type="checkbox" id="stcig_sendNegativeAsField"> 负向提示词优先作为 negative_prompt 字段发送</label>
     </div>
     <div class="stcig-actions">
-      <div class="menu_button" id="stcig_btn_fetch_models">获取模型列表</div>
-      <div class="menu_button" id="stcig_btn_test">测试连接并获取模型</div>
-      <div class="menu_button" id="stcig_btn_save">保存设置</div>
+      <div class="menu_button" id="stcig_btn_fetch_models" title="仅拉取模型列表，不发送生图请求" role="button" tabindex="0">获取模型列表</div>
+      <div class="menu_button" id="stcig_btn_test" title="测试 API 连通性；拿不到模型列表时会发一次生图探测请求" role="button" tabindex="0">测试连接并获取模型</div>
+      <div class="menu_button" id="stcig_btn_save" title="显式保存（修改任意输入时也会自动保存）" role="button" tabindex="0">保存设置</div>
     </div>
   </div>
 
@@ -121,8 +121,8 @@
       </label>
     </div>
     <div class="stcig-actions">
-      <div class="menu_button" id="stcig_btn_reset_templates">恢复提示词模板默认</div>
-      <div class="menu_button" id="stcig_btn_load_prompt_defaults">填入 prefix/suffix/negative 默认</div>
+      <div class="menu_button" id="stcig_btn_reset_templates" title="主模式注入 / 提取器 system / SFW 约束恢复为默认模板" role="button" tabindex="0">恢复提示词模板默认</div>
+      <div class="menu_button" id="stcig_btn_load_prompt_defaults" title="从 prompts.js 填入默认前缀 / 后缀 / 负向提示词" role="button" tabindex="0">填入 prefix/suffix/negative 默认</div>
     </div>
     <div class="stcig-row">
       <label class="stcig-field"><span>注入深度 depth</span>
@@ -152,7 +152,7 @@
           <select id="stcig_extractorModel_select" class="stcig-model-select" aria-label="提取器模型列表">
             <option value="">（获取列表后可下拉选择）</option>
           </select>
-          <input type="text" id="stcig_extractorModel" autocomplete="off" placeholder="可手输任意模型名">
+          <input type="text" id="stcig_extractorModel" autocomplete="off" placeholder="可手输任意模型名" aria-label="提取器模型名（可手动输入）">
         </div>
       </label>
       <label class="stcig-field"><span>提取器 Endpoint</span>
@@ -161,7 +161,7 @@
     </div>
     <div class="stcig-row">
       <label class="stcig-field"><span>提取器系统提示</span>
-        <textarea id="stcig_extractorSystemPrompt" placeholder="EXTRACTOR_USER_TEMPLATE 在 prompts.js，设置页不可编辑"></textarea>
+        <textarea id="stcig_extractorSystemPrompt" placeholder="留空则使用 prompts.js / 内置默认；user 模板（EXTRACTOR_USER_TEMPLATE）固定在 prompts.js，此处不可编辑"></textarea>
       </label>
     </div>
     <div class="stcig-row">
@@ -198,15 +198,15 @@
     </div>
     <div class="stcig-row">
       <label class="stcig-field"><span>SFW 约束文本</span>
-        <textarea id="stcig_sfwConstraint"></textarea>
+        <textarea id="stcig_sfwConstraint" placeholder="留空则使用默认 SFW 约束；会注入到主模式提示 / 提取器 system"></textarea>
       </label>
     </div>
     <div class="stcig-row">
       <label class="stcig-field"><span>敏感词（逗号分隔）</span>
-        <textarea id="stcig_sfwSensitiveWords"></textarea>
+        <textarea id="stcig_sfwSensitiveWords" placeholder="nude, nsfw, 裸..."></textarea>
       </label>
       <label class="stcig-field"><span>替换为</span>
-        <input type="text" id="stcig_sfwReplaceWith" autocomplete="off">
+        <input type="text" id="stcig_sfwReplaceWith" autocomplete="off" placeholder="[sfw]">
       </label>
     </div>
   </div>
@@ -234,17 +234,17 @@
       </label>
     </div>
     <div class="stcig-actions">
-      <div class="menu_button" id="stcig_btn_manual">生成图片</div>
-      <div class="menu_button" id="stcig_btn_from_last">从最近 AI 回复提取并生成</div>
-      <div class="menu_button" id="stcig_btn_reset_count">重置当前聊天自动计数</div>
+      <div class="menu_button" id="stcig_btn_manual" title="用上方提示词立即生图" role="button" tabindex="0">生成图片</div>
+      <div class="menu_button" id="stcig_btn_from_last" title="从最近一条 AI 消息提取提示词并生图" role="button" tabindex="0">从最近 AI 回复提取并生成</div>
+      <div class="menu_button" id="stcig_btn_reset_count" title="清零当前聊天的自动生图计数" role="button" tabindex="0">重置当前聊天自动计数</div>
     </div>
   </div>
 
   <div class="stcig-section">
     <h4>日志</h4>
-    <div id="stcig_log" class="stcig-log">（暂无日志）</div>
+    <div id="stcig_log" class="stcig-log" role="log" aria-live="polite" aria-label="扩展日志">（暂无日志）</div>
     <div class="stcig-actions" style="margin-top:8px;">
-      <div class="menu_button" id="stcig_btn_clear_log">清空日志</div>
+      <div class="menu_button" id="stcig_btn_clear_log" role="button" tabindex="0">清空日志</div>
     </div>
   </div>
             </div>

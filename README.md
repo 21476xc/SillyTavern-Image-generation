@@ -251,8 +251,8 @@ Content-Type: application/json
 
 ## 设置页字段（运行时 ID）
 
-运行时 UI 由 `index.js` → `buildSettingsHtml()` 生成并注入扩展设置区。  
-`settings.html` 仅作对照骨架，ID 与文案应与运行时保持一致，但 **不会** 被 SillyTavern 自动加载。
+运行时 UI 优先加载本目录的 `settings.html`（同目录 fetch / `renderExtensionTemplateAsync`）；仅当模板加载失败时才回退到 `index.js` → `buildSettingsHtml()` 的内置精简面板。  
+因此 `settings.html` 的 ID 与文案必须与 `index.js` 保持一致。
 
 ### 总控
 
@@ -359,7 +359,8 @@ Content-Type: application/json
 | `index.js` | 主逻辑：设置 UI、事件、API、插入图片、内置默认文案 |
 | `style.css` | 设置面板与消息按钮样式 |
 | `prompts.js` | 默认可选模板，挂到 `window.STCustomImageGenPrompts` |
-| `settings.html` | 设置骨架参考（不运行时加载） |
+| `settings.html` | 设置面板模板（运行时优先加载；失败时回退内置面板） |
+| `test_parse_image_response.js` | 本地自测：`node ST-Custom-ImageGen/test_parse_image_response.js` 验证生图响应解析 |
 
 模块名：`st-custom-imagegen`  
 显示名：`自定义生图 (OpenAI 兼容)`  
@@ -372,14 +373,13 @@ Content-Type: application/json
 
 ## 版本
 
-当前：`1.1.4`（见 `manifest.json`；本地扩展，无强制联网更新）
+当前：`1.1.6`（见 `manifest.json`；本地扩展，无强制联网更新）
 
 ### 1.1.4
-- **关键修复**：getExtensionBasePath() 误写为 
-eturn /scripts/extensions//;（非法正则），导致 index.js 作为 ES Module 解析失败；ST 激活扩展失败后，设置面板完全不会注入
-- 回退路径改为合法字符串：/scripts/extensions/third-party/SillyTavern-Image-generation/
+- **关键修复**：`getExtensionBasePath()` 的回退返回值误写成了非法正则字面量，导致 `index.js` 作为 ES Module 解析失败；ST 激活扩展失败后，设置面板完全不会注入
+- 回退路径改为合法字符串：`/scripts/extensions/third-party/SillyTavern-Image-generation/`
 - 强化 base path 解析、jQuery 启动时机、设置面板 jQuery append
-- 暴露 window.STCustomImageGen 预初始化钩子，便于控制台强制打开/重注面板
+- 暴露 `window.STCustomImageGen` 预初始化钩子，便于控制台强制打开/重注面板
 
 ### 1.1.1
 - 补全/恢复 `style.css` 设置面板与消息按钮样式

@@ -1,4 +1,5 @@
-/* ST-Custom-ImageGen - settings panel + message controls */
+/* ST-Custom-ImageGen - settings panel + message controls.
+   Colors derive from SillyTavern theme variables so both light and dark themes stay readable. */
 
 #stcig_settings {
   display: flex;
@@ -49,10 +50,15 @@
 }
 
 #stcig_settings .stcig-field > span,
-#stcig_settings .stcig-hint {
+.stcig-settings-root .stcig-hint {
   font-size: 0.85em;
   opacity: 0.8;
   line-height: 1.3;
+}
+
+/* Intro hint sits outside #stcig_settings (drawer header area). */
+.stcig-settings-root .inline-drawer-content > .stcig-hint {
+  margin-bottom: 8px;
 }
 
 #stcig_settings .stcig-inline-check {
@@ -65,10 +71,6 @@
   line-height: 1.35;
 }
 
-#stcig_settings label {
-  min-width: 0;
-}
-
 #stcig_settings input[type="text"],
 #stcig_settings input[type="password"],
 #stcig_settings input[type="number"],
@@ -76,6 +78,7 @@
 #stcig_settings textarea {
   width: 100%;
   max-width: 100%;
+  min-width: 0;
   box-sizing: border-box;
 }
 
@@ -119,18 +122,20 @@
   font-size: 0.8em;
   line-height: 1.3;
   border: 1px solid color-mix(in srgb, var(--SmartThemeBorderColor, #666) 70%, transparent);
-  opacity: 0.95;
   white-space: nowrap;
 }
 
+/* Mid-tone status colors + subtle tinted background stay legible on light and dark themes. */
 #stcig_settings .stcig-badge.on {
-  color: #7dffa3;
-  border-color: color-mix(in srgb, #3c9 70%, var(--SmartThemeBorderColor, #666));
+  color: #3fbf6f;
+  border-color: color-mix(in srgb, #3fbf6f 60%, var(--SmartThemeBorderColor, #666));
+  background: color-mix(in srgb, #3fbf6f 12%, transparent);
 }
 
 #stcig_settings .stcig-badge.off {
-  color: #ffb4b4;
-  opacity: 0.85;
+  color: #e06c6c;
+  border-color: color-mix(in srgb, #e06c6c 45%, var(--SmartThemeBorderColor, #666));
+  background: color-mix(in srgb, #e06c6c 10%, transparent);
 }
 
 #stcig_settings .stcig-log {
@@ -146,6 +151,33 @@
   border-radius: 6px;
   border: 1px solid color-mix(in srgb, var(--SmartThemeBorderColor, #666) 70%, transparent);
   background: color-mix(in srgb, var(--SmartThemeBlurTintColor, #111) 70%, #000 30%);
+}
+
+/* Model picker: native select is the mobile-reliable path; 16px font prevents iOS focus zoom. */
+#stcig_settings .stcig-model-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+#stcig_settings .stcig-model-select,
+#stcig_settings .stcig-model-picker input[type="text"] {
+  min-height: 36px;
+  font-size: 16px;
+  line-height: 1.35;
+  padding: 6px 8px;
+}
+
+#stcig_settings .stcig-model-select {
+  appearance: auto;
+  -webkit-appearance: menulist;
+  cursor: pointer;
+}
+
+#stcig_settings #stcig_model_fetch_hint {
+  margin-top: 4px;
+  font-size: 0.9em;
 }
 
 /* Message-level controls */
@@ -202,15 +234,33 @@ img.stcig-generated-image {
 
   #stcig_settings .stcig-actions .menu_button {
     flex: 1 1 auto;
+    text-align: center;
   }
 
   #stcig_settings .stcig-log {
     max-height: 140px;
   }
 
-  .stcig-generated-image,
-  img.stcig-generated-image {
-    max-width: 100%;
+  /* Larger tap targets; 16px inputs avoid iOS auto-zoom on focus. */
+  #stcig_settings input[type="text"],
+  #stcig_settings input[type="password"],
+  #stcig_settings input[type="number"],
+  #stcig_settings select {
+    min-height: 42px;
+    font-size: 16px;
+  }
+
+  #stcig_settings textarea {
+    font-size: 16px;
+  }
+
+  #stcig_settings .stcig-model-picker {
+    gap: 8px;
+  }
+
+  .stcig-msg-actions .stcig-icon-btn {
+    padding: 6px 8px;
+    font-size: 1.1em;
   }
 }
 
@@ -226,56 +276,5 @@ img.stcig-generated-image {
 
   #stcig_settings .stcig-badge {
     white-space: normal;
-  }
-}
-
-#stcig_settings .stcig-model-picker {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  width: 100%;
-  min-width: 0;
-}
-
-#stcig_settings .stcig-model-picker .stcig-model-select,
-#stcig_settings .stcig-model-picker input[type="text"] {
-  width: 100%;
-  max-width: 100%;
-  box-sizing: border-box;
-  min-height: 36px;
-}
-
-/* Native select is critical on mobile WebView; keep it large and tappable. */
-#stcig_settings .stcig-model-select {
-  appearance: auto;
-  -webkit-appearance: menulist;
-  cursor: pointer;
-  font-size: 16px; /* reduce iOS auto-zoom on focus */
-  line-height: 1.35;
-  padding: 6px 8px;
-}
-
-#stcig_settings .stcig-model-picker input[type="text"] {
-  font-size: 16px;
-  line-height: 1.35;
-  padding: 6px 8px;
-}
-
-#stcig_settings #stcig_model_fetch_hint {
-  margin-top: 4px;
-  opacity: 0.8;
-  font-size: 0.9em;
-  line-height: 1.35;
-}
-
-@media (max-width: 720px) {
-  #stcig_settings .stcig-model-picker {
-    gap: 8px;
-  }
-
-  #stcig_settings .stcig-model-select,
-  #stcig_settings .stcig-model-picker input[type="text"] {
-    min-height: 42px;
-    font-size: 16px;
   }
 }
