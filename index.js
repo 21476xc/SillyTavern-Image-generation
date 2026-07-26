@@ -14,7 +14,7 @@
 
 const MODULE_NAME = 'st-custom-imagegen';
 const DISPLAY_NAME = '自定义生图 (OpenAI 兼容)';
-const EXTENSION_VERSION = '1.1.6';
+const EXTENSION_VERSION = '1.1.7';
 /** @type {string|null} */
 let cachedExtensionRelativeName = null;
 /** @type {any} */
@@ -2633,6 +2633,177 @@ function escapeHtml(s) {
         .replace(/"/g, '&quot;');
 }
 
+/**
+ * True for values that would explode Chat History token counts if written into mes.mes.
+ * data:image base64 / bare base64 must never enter prompt text.
+ */
+function isBulkyImageRef(value) {
+    const s = String(value || '').trim();
+    if (!s) return false;
+    if (s.startsWith('data:image/')) return true;
+    if (s.startsWith('data:application/octet-stream;base64,')) return true;
+    // bare base64-ish payload (no URL scheme)
+    if (!/^https?:\/\//i.test(s) && !s.startsWith('/') && !s.startsWith('blob:') && lookLikeBase64Image(s)) {
+        return true;
+    }
+    // extremely long non-http strings are unsafe for markdown prompt text
+    if (!/^https?:\/\//i.test(s) && !s.startsWith('/') && s.length > 2048) return true;
+    return false;
+}
+
+/** Short refs that are safe to put into Chat History text. */
+function isPromptSafeImageRef(value) {
+    const s = String(value || '').trim();
+    if (!s) return false;
+    if (isBulkyImageRef(s)) return false;
+    if (/^https?:\/\//i.test(s)) return true;
+    if (s.startsWith('//')) return true;
+    // ST local/relative image paths
+    if (s.startsWith('/') || s.startsWith('user/') || s.startsWith('characters/') || s.startsWith('./')) return true;
+    // keep short custom refs only
+    return s.length <= 512 && !s.includes('base64,');
+}
+
+function getChatImageNameHint() {
+    try {
+        const ctx = getContextSafe();
+        const name = String(ctx?.name2 || ctx?.characterId || 'stcig').trim() || 'stcig';
+        return name.replace(/[^\w\u4e00-\u9fff-]+/g, '_').slice(0, 40) || 'stcig';
+    } catch (_) {
+        return 'stcig';
+    }
+}
+
+function getRequestHeadersSafe(extra = {}) {
+    try {
+        if (typeof window.getRequestHeaders === 'function') {
+            return { ...window.getRequestHeaders(), ...extra };
+        }
+    } catch (_) { /* ignore */ }
+    return {
+        'Content-Type': 'application/json',
+        ...extra,
+    };
+}
+
+/**
+ * Best-effort: persist a data-URI/base64 image through SillyTavern's image upload API
+ * so we can store a short path instead of megabytes of base64 in chat JSON / prompt text.
+ * @returns {Promise<string|null>} short path/url or null
+ */
+async function trySaveImageToSillyTavern(imageInfo) {
+    const dataUri = String(imageInfo?.dataUri || '').trim();
+    const url = String(imageInfo?.url || '').trim();
+    const b64 = String(imageInfo?.b64 || '').trim();
+
+    let payload = '';
+    if (dataUri.startsWith('data:image/')) payload = dataUri;
+    else if (url.startsWith('data:image/')) payload = url;
+    else if (b64) payload = `data:image/png;base64,${b64.replace(/\s+/g, '')}`;
+    else return null;
+
+    if (!payload.startsWith('data:image/')) return null;
+
+    const filename = `stcig-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const chName = getChatImageNameHint();
+    const bodies = [
+        { image: payload, ch_name: chName, filename },
+        { image: payload, ch_name: chName, file_name: filename },
+        { image: payload, filename },
+    ];
+    const endpoints = ['/api/images/upload', '/api/images/upload/']; 
+
+    for (const endpoint of endpoints) {
+        for (const body of bodies) {
+            try {
+                const res = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: getRequestHeadersSafe({ 'Content-Type': 'application/json' }),
+                    body: JSON.stringify(body),
+                    credentials: 'same-origin',
+                });
+                if (!res.ok) continue;
+                const raw = await res.text();
+                let data = null;
+                try { data = raw ? JSON.parse(raw) : null; } catch (_) { data = raw; }
+                const path = (
+                    (typeof data === 'string' && data.trim())
+                    || data?.path
+                    || data?.url
+                    || data?.image
+                    || data?.file
+                    || data?.filename
+                    || data?.name
+                    || ''
+                );
+                const saved = String(path || '').trim();
+                if (saved && !isBulkyImageRef(saved)) {
+                    log('info', '图片已保存到酒馆本地', saved.slice(0, 160));
+                    return saved;
+                }
+            } catch (err) {
+                log('warn', `本地存图失败 (${endpoint})`, err?.message || err);
+            }
+        }
+    }
+    return null;
+}
+
+/**
+ * Decide how to attach an image without blowing up prompt tokens.
+ * - promptSafeUrl: may be written into mes.mes markdown
+ * - displayUrl: used for DOM / extra.image (may be data URI)
+ * - useMarkdown: whether mes.mes should receive markdown
+ */
+async function resolveImageInsertPlan(imageInfo, { allowMarkdown = true } = {}) {
+    const rawUrl = String(imageInfo?.url || '').trim();
+    const rawDataUri = String(imageInfo?.dataUri || '').trim();
+    const preferred = rawDataUri || rawUrl;
+    if (!preferred) throw new Error('无可用图片 URL');
+
+    let promptSafeUrl = '';
+    let displayUrl = preferred;
+
+    if (isPromptSafeImageRef(rawUrl)) {
+        promptSafeUrl = rawUrl.startsWith('//') ? `https:${rawUrl}` : rawUrl;
+        displayUrl = promptSafeUrl;
+    } else if (isPromptSafeImageRef(rawDataUri)) {
+        promptSafeUrl = rawDataUri;
+        displayUrl = rawDataUri;
+    }
+
+    // Bulky inline image: try converting to a short local path first.
+    if (!promptSafeUrl && isBulkyImageRef(preferred)) {
+        const saved = await trySaveImageToSillyTavern({
+            dataUri: rawDataUri || (preferred.startsWith('data:') ? preferred : ''),
+            url: rawUrl,
+            b64: imageInfo?.b64 || null,
+        });
+        if (saved) {
+            promptSafeUrl = saved;
+            displayUrl = saved;
+        } else {
+            // Keep displayable data URI only in extra.image / DOM — never in mes text.
+            displayUrl = preferred;
+            promptSafeUrl = '';
+            log('warn', '图片为 base64/dataURI 且本地存图失败：将只写入附件字段，避免污染 Chat History');
+        }
+    }
+
+    if (!promptSafeUrl && isPromptSafeImageRef(preferred)) {
+        promptSafeUrl = preferred;
+        displayUrl = preferred;
+    }
+
+    const useMarkdown = !!(allowMarkdown && promptSafeUrl && isPromptSafeImageRef(promptSafeUrl));
+    return {
+        promptSafeUrl: promptSafeUrl || '',
+        displayUrl: displayUrl || preferred,
+        useMarkdown,
+        bulky: isBulkyImageRef(displayUrl) && !promptSafeUrl,
+    };
+}
+
 async function insertImageToMessage(messageIndex, imageInfo, usedPrompt) {
     const mes = getMessageByIndex(messageIndex);
     if (!mes) {
@@ -2640,26 +2811,43 @@ async function insertImageToMessage(messageIndex, imageInfo, usedPrompt) {
         return;
     }
 
-    const imageUrl = imageInfo.dataUri || imageInfo.url;
+    const plan = await resolveImageInsertPlan(imageInfo, {
+        allowMarkdown: !!settings.insertAsMarkdown,
+    });
+    const imageUrl = plan.displayUrl;
     if (!imageUrl) throw new Error('无可用图片 URL');
 
     mes.extra = mes.extra || {};
     mes.extra.stcig = mes.extra.stcig || {};
     mes.extra.stcig.lastPrompt = usedPrompt;
-    mes.extra.stcig.lastUrl = imageInfo.url || null;
+    // Prefer short/safe ref in metadata; never rely on multi-MB base64 in prompt assembly.
+    mes.extra.stcig.lastUrl = plan.promptSafeUrl || (isPromptSafeImageRef(imageInfo?.url) ? imageInfo.url : null);
     mes.extra.stcig.updatedAt = Date.now();
+    mes.extra.stcig.bulkyInline = !!plan.bulky;
 
     // Strip prompt blocks first, then append the image exactly once.
     if (settings.stripTagsFromDisplay && containsImagePromptBlock(mes.mes)) {
         mes.mes = stripImagePromptTags(mes.mes);
     }
-    if (settings.insertAsMarkdown) {
-        if (!String(mes.mes || '').includes(imageUrl)) {
-            mes.mes = `${String(mes.mes || '').trim()}\n\n${buildMarkdownImage(imageUrl, 'stcig')}`.trim();
+
+    if (plan.useMarkdown && plan.promptSafeUrl) {
+        const md = buildMarkdownImage(plan.promptSafeUrl, 'stcig');
+        if (!String(mes.mes || '').includes(plan.promptSafeUrl)) {
+            mes.mes = `${String(mes.mes || '').trim()}\n\n${md}`.trim();
+        }
+        // Also set extra.image for clients that render attachments from extra.
+        if (!mes.extra.image) {
+            mes.extra.image = plan.promptSafeUrl;
+            mes.extra.inline_image = true;
         }
     } else {
+        // Safe path for base64/dataURI: attachment only, no multi-MB text in mes.mes.
         mes.extra.image = imageUrl;
         mes.extra.inline_image = true;
+        // If user asked for markdown but ref is unsafe, do not fall back to inlining base64 text.
+        if (settings.insertAsMarkdown && plan.bulky) {
+            log('info', '已跳过 Markdown 内联 base64，改用 extra.image 附件，避免上下文暴涨');
+        }
     }
 
     const ok = await persistChat({ preferImmediate: true });
@@ -2668,17 +2856,26 @@ async function insertImageToMessage(messageIndex, imageInfo, usedPrompt) {
 }
 
 async function appendStandaloneImageMessage(imageInfo, usedPrompt) {
-    const imageUrl = imageInfo.dataUri || imageInfo.url;
-    const md = buildMarkdownImage(imageUrl, 'stcig');
-    // HTML comments must not contain "--"; escapeHtml alone does not prevent premature comment close.
+    const plan = await resolveImageInsertPlan(imageInfo, {
+        // Standalone messages previously always inlined markdown; keep preference but stay safe.
+        allowMarkdown: !!settings.insertAsMarkdown,
+    });
+    const imageUrl = plan.displayUrl;
     const commentSafePrompt = escapeHtml(usedPrompt).replace(/-{2,}/g, '-').slice(0, 500);
-    const text = `${md}\n\n<!-- stcig prompt: ${commentSafePrompt} -->`;
+
+    let text;
+    if (plan.useMarkdown && plan.promptSafeUrl) {
+        text = `${buildMarkdownImage(plan.promptSafeUrl, 'stcig')}\n\n<!-- stcig prompt: ${commentSafePrompt} -->`;
+    } else {
+        // Never put data URI/base64 into mes text.
+        text = `[stcig image]\n<!-- stcig prompt: ${commentSafePrompt} -->`;
+    }
 
     const ctx = getContextSafe();
     const chat = ctx.chat || window.chat;
     if (!Array.isArray(chat)) {
         toast('info', '图片已生成，但无法写入聊天；请查看日志中的 URL');
-        log('info', 'standalone image url', imageUrl.slice(0, 120));
+        log('info', 'standalone image url', String(imageUrl || '').slice(0, 120));
         return;
     }
     chat.push({
@@ -2687,7 +2884,15 @@ async function appendStandaloneImageMessage(imageInfo, usedPrompt) {
         is_system: true,
         send_date: Date.now(),
         mes: text,
-        extra: { stcig: { lastPrompt: usedPrompt, lastUrl: imageInfo.url || null } },
+        extra: {
+            image: imageUrl,
+            inline_image: true,
+            stcig: {
+                lastPrompt: usedPrompt,
+                lastUrl: plan.promptSafeUrl || null,
+                bulkyInline: !!plan.bulky,
+            },
+        },
     });
     const ok = await persistChat({ preferImmediate: true });
     if (!ok) log('warn', '独立图片消息已 push，但聊天保存可能未成功');
@@ -2712,10 +2917,13 @@ async function refreshMessageDom(messageIndex, mes, imageUrl) {
                 } catch (_) { html = null; }
                 if (html) {
                     textEl.innerHTML = html;
-                } else if (settings.insertAsMarkdown && !textEl.innerHTML.includes(imageUrl)) {
-                    textEl.appendChild(createGeneratedImageEl(imageUrl));
                 }
-                if (!settings.insertAsMarkdown && !textEl.querySelector('img.stcig-generated-image')) {
+                // Ensure visible image even when mes text only has a short placeholder.
+                const hasImg = !!(
+                    textEl.querySelector('img.stcig-generated-image')
+                    || (imageUrl && isPromptSafeImageRef(imageUrl) && textEl.innerHTML.includes(imageUrl))
+                );
+                if (!hasImg && imageUrl) {
                     textEl.appendChild(createGeneratedImageEl(imageUrl));
                 }
             }

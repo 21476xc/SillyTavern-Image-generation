@@ -1,7 +1,7 @@
 # ST-Custom-ImageGen
 
 > **找不到插件面板？**
-> 1. 先确认已更新到 **1.1.6+**（1.1.3 有模块语法错误，安装后设置面板不会出现）。
+> 1. 先确认已更新到 **1.1.7+**（1.1.3 有模块语法错误，安装后设置面板不会出现）。
 > 2. 打开 **扩展 → 管理扩展**，找到 `自定义生图 (OpenAI 兼容)` / `SillyTavern-Image-generation`，确认开关为启用，然后硬刷新。
 > 3. 设置面板在扩展设置列表里（和其他第三方扩展一起），不是单独新页面。
 > 4. 手机浏览器可看日志：搜索 `st-custom-imagegen` 或 `Invalid regular expression flags`。
@@ -10,7 +10,7 @@ SillyTavern 第三方扩展：**自定义生图（OpenAI 兼容）**。
 
 在角色扮演过程中，自动或手动调用兼容 OpenAI Images API 的服务生成图片，并插入到对话消息中。支持两种提示词来源模式、SFW 约束、独立提取 API，以及消息级手动重生成。
 
-当前版本：**1.1.6**
+当前版本：**1.1.7**
 
 ---
 
@@ -71,6 +71,12 @@ ST-Custom-ImageGen
 - 控制台 `window.STCustomImageGen.openSettings()`
 
 ---
+
+## 1.1.7 修复
+
+- **防止 Chat History 被 base64 撑爆**：不再把 `data:image/...;base64,...` 写入消息正文 `mes`。
+- Markdown 插入仅用于短 `http(s)` / 本地路径；base64 图优先尝试保存到酒馆本地，失败则只写 `extra.image` 附件。
+- 独立图片消息同样不会再内联超长 data URI。
 
 ## 1.1.6 修复
 
@@ -373,7 +379,7 @@ Content-Type: application/json
 
 ## 版本
 
-当前：`1.1.6`（见 `manifest.json`；本地扩展，无强制联网更新）
+当前：`1.1.7`（见 `manifest.json`；本地扩展，无强制联网更新）
 
 ### 1.1.4
 - **关键修复**：`getExtensionBasePath()` 的回退返回值误写成了非法正则字面量，导致 `index.js` 作为 ES Module 解析失败；ST 激活扩展失败后，设置面板完全不会注入
