@@ -38,9 +38,13 @@
     </div>
     <div class="stcig-row">
       <label class="stcig-field"><span>Model（可下拉 / 可手输）</span>
-        <input type="text" id="stcig_apiModel" list="stcig_apiModel_list" placeholder="dall-e-3 / flux / gemini... 测试连接后可选择" autocomplete="off">
-        <datalist id="stcig_apiModel_list"></datalist>
-        <div id="stcig_model_fetch_hint" class="stcig-hint">点击「测试连接」自动拉取 API 支持的模型列表</div>
+        <div class="stcig-model-picker">
+          <select id="stcig_apiModel_select" class="stcig-model-select" aria-label="生图模型列表">
+            <option value="">（获取列表后可下拉选择）</option>
+          </select>
+          <input type="text" id="stcig_apiModel" placeholder="dall-e-3 / flux / gemini... 可手输任意模型名" autocomplete="off">
+        </div>
+        <div id="stcig_model_fetch_hint" class="stcig-hint">可用「获取模型列表」或「测试连接」拉取 API 支持的模型；手机端请用上方下拉，也可直接手输。</div>
       </label>
       <label class="stcig-field"><span>Endpoint 路径</span>
         <input type="text" id="stcig_apiEndpoint" placeholder="/v1/images/generations 或 /images/generations" autocomplete="off">
@@ -95,6 +99,7 @@
       <label class="stcig-inline-check"><input type="checkbox" id="stcig_sendNegativeAsField"> 负向提示词优先作为 negative_prompt 字段发送</label>
     </div>
     <div class="stcig-actions">
+      <div class="menu_button" id="stcig_btn_fetch_models">获取模型列表</div>
       <div class="menu_button" id="stcig_btn_test">测试连接并获取模型</div>
       <div class="menu_button" id="stcig_btn_save">保存设置</div>
     </div>
@@ -143,8 +148,12 @@
     </div>
     <div class="stcig-row">
       <label class="stcig-field"><span>提取器 Model（可下拉 / 可手输）</span>
-        <input type="text" id="stcig_extractorModel" list="stcig_extractorModel_list" autocomplete="off" placeholder="测试连接后可选择">
-        <datalist id="stcig_extractorModel_list"></datalist>
+        <div class="stcig-model-picker">
+          <select id="stcig_extractorModel_select" class="stcig-model-select" aria-label="提取器模型列表">
+            <option value="">（获取列表后可下拉选择）</option>
+          </select>
+          <input type="text" id="stcig_extractorModel" autocomplete="off" placeholder="可手输任意模型名">
+        </div>
       </label>
       <label class="stcig-field"><span>提取器 Endpoint</span>
         <input type="text" id="stcig_extractorEndpoint" placeholder="/v1/chat/completions" autocomplete="off">

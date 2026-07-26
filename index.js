@@ -14,7 +14,7 @@
 
 const MODULE_NAME = 'st-custom-imagegen';
 const DISPLAY_NAME = '自定义生图 (OpenAI 兼容)';
-const EXTENSION_VERSION = '1.1.5';
+const EXTENSION_VERSION = '1.1.6';
 /** @type {string|null} */
 let cachedExtensionRelativeName = null;
 /** @type {any} */
@@ -486,11 +486,12 @@ function buildSettingsHtml() {
     <div class="stcig-row">
       <label class="stcig-field"><span>Base URL</span><input type="text" id="stcig_apiBaseUrl"></label>
       <label class="stcig-field"><span>API Key</span><input type="password" id="stcig_apiKey"></label>
-      <label class="stcig-field"><span>Model</span><input type="text" id="stcig_apiModel" list="stcig_apiModel_list" placeholder="测试连接后可下拉选择"><datalist id="stcig_apiModel_list"></datalist><div id="stcig_model_fetch_hint" class="stcig-hint">点击「测试连接」可自动拉取模型列表</div></label>
+      <label class="stcig-field"><span>Model（可下拉 / 可手输）</span><div class="stcig-model-picker"><select id="stcig_apiModel_select" class="stcig-model-select" aria-label="生图模型列表"><option value="">（获取列表后可下拉选择）</option></select><input type="text" id="stcig_apiModel" placeholder="可手输任意模型名" autocomplete="off"></div><div id="stcig_model_fetch_hint" class="stcig-hint">可用「获取模型列表」或「测试连接」拉取模型</div></label>
       <label class="stcig-field"><span>Endpoint</span><input type="text" id="stcig_apiEndpoint"></label>
     </div>
     <div class="stcig-actions">
       <div class="menu_button" id="stcig_btn_save">保存设置</div>
+      <div class="menu_button" id="stcig_btn_fetch_models">获取模型列表</div>
       <div class="menu_button" id="stcig_btn_test">测试连接并获取模型</div>
     </div>
   </div>
@@ -880,11 +881,12 @@ function bindSettingsUi() {
     if (root.dataset && root.dataset.stcigBound === '1') return;
     if (root.dataset) root.dataset.stcigBound = '1';
 
+    // Model fields use dedicated select + text input handlers for mobile-friendly picking.
     const ids = [
         'enabled', 'autoGenerate', 'onlyAiMessages', 'stripTagsFromDisplay', 'insertAsMarkdown', 'showMessageButtons',
-        'apiBaseUrl', 'apiKey', 'apiModel', 'apiEndpoint', 'size', 'quality', 'style', 'n', 'responseFormat', 'extraBodyJson', 'sendNegativeAsField',
+        'apiBaseUrl', 'apiKey', 'apiEndpoint', 'size', 'quality', 'style', 'n', 'responseFormat', 'extraBodyJson', 'sendNegativeAsField',
         'promptMode', 'mainInjectionPrompt', 'mainInjectionDepth', 'mainInjectionPosition',
-        'extractorUseMainCredentials', 'extractorBaseUrl', 'extractorApiKey', 'extractorModel', 'extractorEndpoint',
+        'extractorUseMainCredentials', 'extractorBaseUrl', 'extractorApiKey', 'extractorEndpoint',
         'extractorSystemPrompt', 'extractorTemperature', 'extractorMaxTokens',
         'promptPrefix', 'promptSuffix', 'negativePrompt',
         'sfwEnabled', 'sfwConstraint', 'sfwSensitiveWords', 'sfwReplaceWith',
@@ -917,6 +919,10 @@ function bindSettingsUi() {
         log('info', '设置已保存');
     });
 
+    bindModelPickerUi('apiModel', 'apiModel');
+    bindModelPickerUi('extractorModel', 'extractorModel');
+
+    $('stcig_btn_fetch_models')?.addEventListener('click', () => { void fetchModelsOnly(); });
     $('stcig_btn_test')?.addEventListener('click', () => { void testConnection(); });
     $('stcig_btn_manual')?.addEventListener('click', () => {
         const prompt = ($('stcig_manual_prompt')?.value || '').trim();
@@ -1066,6 +1072,9 @@ function syncUiFromSettings() {
     setVal('stcig_timeoutMs', settings.timeoutMs);
     setVal('stcig_manual_prompt', settings.manualPrompt);
 
+    // Keep select options in sync with current values / last fetched list.
+    populateModelSelectors(cachedModelList, { selectCurrent: true });
+
     updateStatusBadges();
     updateModeVisibility();
     refreshLogPanel();
@@ -1088,7 +1097,7 @@ function updateModeVisibility() {
     const isExtractor = settings.promptMode === 'extractor';
     const extractorIds = [
         'stcig_extractorUseMainCredentials', 'stcig_extractorBaseUrl', 'stcig_extractorApiKey',
-        'stcig_extractorModel', 'stcig_extractorEndpoint', 'stcig_extractorSystemPrompt',
+        'stcig_extractorModel', 'stcig_extractorModel_select', 'stcig_extractorEndpoint', 'stcig_extractorSystemPrompt',
         'stcig_extractorTemperature', 'stcig_extractorMaxTokens',
     ];
     for (const id of extractorIds) {
@@ -1498,38 +1507,165 @@ function authHeaders(apiKey, extra = {}) {
     return headers;
 }
 
-function fillModelDatalist(datalistId, models, currentValue) {
-    const list = document.getElementById(datalistId);
-    if (!list) return 0;
-    const ids = Array.isArray(models) ? models.slice() : [];
+/** Last fetched model ids kept for re-sync after manual edits. */
+let cachedModelList = [];
+
+/**
+ * Fill a real <select> with model options. Mobile WebView supports this reliably.
+ * Always keeps a blank first option so users can keep typing custom model names.
+ */
+function fillModelSelect(selectId, models, currentValue) {
+    const sel = document.getElementById(selectId);
+    if (!sel) return 0;
+    const ids = [];
+    const seen = new Set();
+    const pushId = (raw) => {
+        const id = String(raw || '').trim();
+        if (!id || seen.has(id)) return;
+        seen.add(id);
+        ids.push(id);
+    };
+    if (Array.isArray(models)) {
+        for (const m of models) pushId(m);
+    }
     const cur = String(currentValue || '').trim();
-    if (cur && !ids.includes(cur)) ids.unshift(cur);
-    list.innerHTML = '';
+    // Keep current custom value visible in the select list when it is not from API.
+    if (cur && !seen.has(cur)) ids.unshift(cur);
+
+    const prev = String(sel.value || '');
+    sel.innerHTML = '';
+    const blank = document.createElement('option');
+    blank.value = '';
+    blank.textContent = ids.length ? '（手输 / 从列表选择）' : '（获取列表后可下拉选择）';
+    sel.appendChild(blank);
     for (const id of ids) {
         const opt = document.createElement('option');
         opt.value = id;
-        list.appendChild(opt);
+        opt.textContent = id;
+        sel.appendChild(opt);
+    }
+    if ((cur && seen.has(cur)) || (cur && ids.includes(cur))) {
+        sel.value = cur;
+    } else if (prev && ids.includes(prev)) {
+        sel.value = prev;
+    } else {
+        sel.value = '';
     }
     return ids.length;
 }
 
+function syncModelSelectToValue(selectId, value) {
+    const sel = document.getElementById(selectId);
+    if (!sel) return;
+    const cur = String(value || '').trim();
+    if (!cur) {
+        sel.value = '';
+        return;
+    }
+    const has = Array.from(sel.options).some((o) => o.value === cur);
+    if (!has) {
+        const opt = document.createElement('option');
+        opt.value = cur;
+        opt.textContent = cur;
+        // Insert after blank option when possible.
+        if (sel.options.length > 1) sel.insertBefore(opt, sel.options[1]);
+        else sel.appendChild(opt);
+    }
+    sel.value = cur;
+}
+
+function bindModelPickerUi(fieldKey, settingsKey) {
+    const input = $(`stcig_${fieldKey}`);
+    const select = $(`stcig_${fieldKey}_select`);
+    if (select && !select.dataset.stcigModelBound) {
+        select.dataset.stcigModelBound = '1';
+        select.addEventListener('change', () => {
+            const v = String(select.value || '').trim();
+            if (!v) return;
+            if (input) input.value = v;
+            settings[settingsKey] = v;
+            saveSettings();
+            applyExtensionPromptInjection();
+            updateStatusBadges();
+            log('info', `已选择${settingsKey === 'apiModel' ? '生图' : '提取器'}模型`, v);
+        });
+    }
+    if (input && !input.dataset.stcigModelBound) {
+        input.dataset.stcigModelBound = '1';
+        const persist = () => {
+            const v = String(input.value || '').trim();
+            settings[settingsKey] = v;
+            syncModelSelectToValue(`stcig_${fieldKey}_select`, v);
+            saveSettings();
+            applyExtensionPromptInjection();
+            updateStatusBadges();
+        };
+        input.addEventListener('change', persist);
+        input.addEventListener('blur', persist);
+    }
+}
+
 function populateModelSelectors(models, { selectCurrent = true } = {}) {
-    const ids = Array.isArray(models) ? models.filter(Boolean) : [];
-    const n1 = fillModelDatalist('stcig_apiModel_list', ids, settings.apiModel);
-    const n2 = fillModelDatalist('stcig_extractorModel_list', ids, settings.extractorModel);
+    const ids = Array.isArray(models) ? models.filter(Boolean).map((x) => String(x).trim()).filter(Boolean) : [];
+    // Deduplicate while preserving order.
+    const uniq = [];
+    const seen = new Set();
+    for (const id of ids) {
+        if (seen.has(id)) continue;
+        seen.add(id);
+        uniq.push(id);
+    }
+    if (uniq.length) cachedModelList = uniq.slice();
+
+    const source = uniq.length ? uniq : cachedModelList;
+    const n1 = fillModelSelect('stcig_apiModel_select', source, settings.apiModel);
+    const n2 = fillModelSelect('stcig_extractorModel_select', source, settings.extractorModel);
     const hint = $('stcig_model_fetch_hint');
     if (hint) {
-        hint.textContent = ids.length
-            ? `已加载 ${ids.length} 个模型，可下拉选择或继续手输`
+        hint.textContent = source.length
+            ? `已加载 ${source.length} 个模型：上方下拉选择，或下方手输任意名称`
             : '未获取到模型列表，可手动填写模型名';
     }
     if (selectCurrent) {
         const modelInput = $('stcig_apiModel');
-        if (modelInput && settings.apiModel) modelInput.value = settings.apiModel;
+        if (modelInput) modelInput.value = settings.apiModel || '';
         const extInput = $('stcig_extractorModel');
-        if (extInput && settings.extractorModel) extInput.value = settings.extractorModel;
+        if (extInput) extInput.value = settings.extractorModel || '';
+        syncModelSelectToValue('stcig_apiModel_select', settings.apiModel);
+        syncModelSelectToValue('stcig_extractorModel_select', settings.extractorModel);
     }
-    return Math.max(n1, n2, ids.length);
+    return Math.max(n1, n2, source.length);
+}
+
+async function fetchModelsOnly() {
+    readUiIntoSettings();
+    saveSettings();
+    const base = String(settings.apiBaseUrl || '').trim();
+    const key = String(settings.apiKey || '').trim();
+    if (!base) {
+        toast('warning', '请先填写生图 Base URL');
+        return;
+    }
+    try {
+        toast('info', '正在获取模型列表...');
+        const result = await fetchModelList(base, key, { timeoutMs: Math.min(settings.timeoutMs || 120000, 30000) });
+        const models = result.models || [];
+        populateModelSelectors(models, { selectCurrent: true });
+        if (!settings.apiModel && models.length) {
+            settings.apiModel = models[0];
+            const el = $('stcig_apiModel');
+            if (el) el.value = models[0];
+            syncModelSelectToValue('stcig_apiModel_select', models[0]);
+            saveSettings();
+        }
+        toast('success', `已加载 ${models.length} 个模型`);
+        log('info', `模型列表获取成功（${models.length}）`, { url: result.url, sample: models.slice(0, 12) });
+    } catch (err) {
+        populateModelSelectors(cachedModelList, { selectCurrent: true });
+        const msg = err?.message || String(err);
+        toast('error', `获取模型列表失败: ${msg}`);
+        log('error', '获取模型列表失败', msg);
+    }
 }
 
 async function fetchModelList(baseUrl, apiKey, { timeoutMs = 20000 } = {}) {
@@ -1582,7 +1718,7 @@ function extractApiErrorMessage(data, statusText, status) {
     return `HTTP ${status || '?'}`;
 }
 
-async function fetchJson(url, { method = 'POST', headers = {}, body, timeoutMs } = {}) {
+async function fetchJson(url, { method = 'POST', headers = {}, body, timeoutMs, acceptBinaryImage = false } = {}) {
     const controller = new AbortController();
     const ms = timeoutMs ?? settings.timeoutMs ?? 120000;
     const timer = setTimeout(() => controller.abort(), ms);
@@ -1593,9 +1729,82 @@ async function fetchJson(url, { method = 'POST', headers = {}, body, timeoutMs }
             body: body !== undefined ? JSON.stringify(body) : undefined,
             signal: controller.signal,
         });
+
+        const contentType = String(res.headers.get('content-type') || '').toLowerCase();
+
+        // When image bytes are possible, read as ArrayBuffer first.
+        // Some gateways return PNG/JPEG with wrong/missing content-type.
+        if (acceptBinaryImage) {
+            const buf = await res.arrayBuffer();
+            const bytes = new Uint8Array(buf || []);
+            const mimeFromHeader = contentType.startsWith('image/')
+                ? (contentType.split(';')[0].trim() || 'image/png')
+                : null;
+            const mimeFromBytes = guessImageMimeFromBytes(bytes);
+            const looksBinaryImage = !!(mimeFromHeader || mimeFromBytes);
+            const declaredBinary = (
+                contentType.startsWith('image/')
+                || contentType.includes('application/octet-stream')
+                || contentType.includes('binary')
+            );
+
+            if (res.ok && looksBinaryImage && (declaredBinary || mimeFromBytes)) {
+                if (!bytes.length) {
+                    throw new Error(`图片响应为空（${contentType || 'unknown'}）：${url}`);
+                }
+                const mime = mimeFromHeader || mimeFromBytes || 'image/png';
+                const b64 = arrayBufferToBase64(buf);
+                const dataUri = `data:${mime};base64,${b64}`;
+                return {
+                    __stcigRawImage: true,
+                    contentType: mime,
+                    b64_json: b64,
+                    url: dataUri,
+                    dataUri,
+                    rawBytes: bytes.length,
+                };
+            }
+
+            const text = new TextDecoder('utf-8').decode(bytes);
+            let data = null;
+            try { data = text ? JSON.parse(text) : null; } catch (_) {
+                const plain = String(text || '').trim();
+                if (plain && (
+                    plain.startsWith('data:image/')
+                    || /^https?:\/\//i.test(plain)
+                    || (/^[A-Za-z0-9+/=\s_-]+$/.test(plain) && plain.replace(/\s+/g, '').length > 64)
+                )) {
+                    data = plain;
+                } else {
+                    data = { raw: text };
+                }
+            }
+            if (!res.ok) {
+                const msg = extractApiErrorMessage(data, res.statusText, res.status);
+                const err = new Error(`${msg} (${method} ${url})`);
+                err.status = res.status;
+                err.data = data;
+                err.url = url;
+                throw err;
+            }
+            return data;
+        }
+
         const text = await res.text();
         let data = null;
-        try { data = text ? JSON.parse(text) : null; } catch (_) { data = { raw: text }; }
+        try { data = text ? JSON.parse(text) : null; } catch (_) {
+            // Some gateways return bare base64 / data URI / image URL as plain text.
+            const plain = String(text || '').trim();
+            if (plain && (
+                plain.startsWith('data:image/')
+                || /^https?:\/\//i.test(plain)
+                || (/^[A-Za-z0-9+/=\s]+$/.test(plain) && plain.replace(/\s+/g, '').length > 64)
+            )) {
+                data = plain;
+            } else {
+                data = { raw: text };
+            }
+        }
         if (!res.ok) {
             const msg = extractApiErrorMessage(data, res.statusText, res.status);
             const err = new Error(`${msg} (${method} ${url})`);
@@ -1604,8 +1813,7 @@ async function fetchJson(url, { method = 'POST', headers = {}, body, timeoutMs }
             err.url = url;
             throw err;
         }
-        return data;
-    } catch (err) {
+        return data;    } catch (err) {
         if (err?.name === 'AbortError' || controller.signal.aborted) {
             const timeoutErr = new Error(`请求超时（${ms}ms）：${url}`);
             timeoutErr.code = 'TIMEOUT';
@@ -1621,6 +1829,144 @@ async function fetchJson(url, { method = 'POST', headers = {}, body, timeoutMs }
         throw err;
     } finally {
         clearTimeout(timer);
+    }
+}
+
+function arrayBufferToBase64(buf) {
+    if (!buf) return '';
+    if (typeof Buffer !== 'undefined' && typeof Buffer.from === 'function') {
+        return Buffer.from(buf).toString('base64');
+    }
+    const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+    let binary = '';
+    const chunk = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunk) {
+        binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+    }
+    if (typeof btoa === 'function') return btoa(binary);
+    throw new Error('无法将图片字节编码为 base64');
+}
+
+function guessImageMimeFromBytes(bytes) {
+    const b = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes || []);
+    if (b.length >= 8 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4E && b[3] === 0x47) return 'image/png';
+    if (b.length >= 3 && b[0] === 0xFF && b[1] === 0xD8 && b[2] === 0xFF) return 'image/jpeg';
+    if (b.length >= 6 && b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x38) return 'image/gif';
+    if (b.length >= 12 && b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46
+        && b[8] === 0x57 && b[9] === 0x45 && b[10] === 0x42 && b[11] === 0x50) return 'image/webp';
+    if (b.length >= 2 && b[0] === 0x42 && b[1] === 0x4D) return 'image/bmp';
+    return null;
+}
+
+function normalizeMimeType(mime, fallback = 'image/png') {
+    const m = String(mime || '').trim().toLowerCase();
+    if (!m) return fallback;
+    if (m === 'jpg') return 'image/jpeg';
+    if (m.startsWith('image/')) return m.split(';')[0].trim();
+    if (/^(png|jpeg|jpg|gif|webp|bmp|svg\+xml)$/i.test(m)) {
+        return `image/${m === 'jpg' ? 'jpeg' : m}`;
+    }
+    return fallback;
+}
+
+function makeImageRefFromUrl(url) {
+    const u = String(url || '').trim();
+    if (!u) return null;
+    if (u.startsWith('data:')) return { url: u, b64: null, dataUri: u };
+    if (/^https?:\/\//i.test(u) || u.startsWith('//') || u.startsWith('blob:')) {
+        const normalized = u.startsWith('//') ? `https:${u}` : u;
+        return { url: normalized, b64: null, dataUri: null };
+    }
+    return null;
+}
+
+function makeImageRefFromBase64(b64, mime) {
+    let raw = String(b64 || '').trim();
+    if (!raw) return null;
+    if (raw.startsWith('data:')) return { url: raw, b64: null, dataUri: raw };
+    // Strip optional data-uri prefix leftovers and whitespace.
+    raw = raw.replace(/^data:[^,]+,/i, '').replace(/\s+/g, '');
+    if (!raw || raw.length < 16) return null;
+    // Reject obvious non-base64 short tokens.
+    if (!/^[A-Za-z0-9+/=_-]+$/.test(raw)) return null;
+    // URL-safe base64 -> standard
+    if (raw.includes('-') || raw.includes('_')) {
+        raw = raw.replace(/-/g, '+').replace(/_/g, '/');
+    }
+    const m = normalizeMimeType(mime, 'image/png');
+    const dataUri = `data:${m};base64,${raw}`;
+    return { url: dataUri, b64: raw, dataUri };
+}
+
+function lookLikeBase64Image(s) {
+    const raw = String(s || '').replace(/\s+/g, '');
+    if (raw.length < 64) return false;
+    if (!/^[A-Za-z0-9+/=_-]+$/.test(raw)) return false;
+    // Heuristic: decoded image headers often start with iVBOR (PNG) / /9j/ (JPEG) / R0lGOD (GIF) / UklGR (WEBP)
+    return /^(iVBOR|\/9j\/|R0lGOD|UklGR|Qk[0-9A-Za-z]|PHN2Zy)/.test(raw) || raw.length > 200;
+}
+
+function pickFirstString(...vals) {
+    for (const v of vals) {
+        if (typeof v === 'string' && v.trim()) return v.trim();
+        if (v && typeof v === 'object') {
+            if (typeof v.url === 'string' && v.url.trim()) return v.url.trim();
+            if (typeof v.href === 'string' && v.href.trim()) return v.href.trim();
+        }
+    }
+    return null;
+}
+
+function summarizeResponseShape(data, depth = 0, maxDepth = 3, maxKeys = 10) {
+    try {
+        if (data == null) return String(data);
+        if (typeof data === 'string') {
+            const s = data.trim();
+            if (s.startsWith('data:image/')) return `string(data-uri,len=${s.length})`;
+            if (/^https?:\/\//i.test(s)) return `string(url,len=${Math.min(s.length, 120)})`;
+            if (lookLikeBase64Image(s)) return `string(base64?,len=${s.replace(/\s+/g, '').length})`;
+            return `string(len=${s.length},preview=${JSON.stringify(s.slice(0, 48))})`;
+        }
+        if (typeof data === 'number' || typeof data === 'boolean') return String(data);
+        if (Array.isArray(data)) {
+            if (depth >= maxDepth) return `array(len=${data.length})`;
+            const head = data.slice(0, 3).map(x => summarizeResponseShape(x, depth + 1, maxDepth, maxKeys));
+            const more = data.length > 3 ? `,…+${data.length - 3}` : '';
+            return `[${head.join(', ')}${more}]`;
+        }
+        if (typeof data === 'object') {
+            if (data.__stcigRawImage) {
+                return `raw-image(mime=${data.contentType || '?'},bytes=${data.rawBytes || '?'})`;
+            }
+            const keys = Object.keys(data);
+            if (depth >= maxDepth) return `{${keys.slice(0, maxKeys).join(',')}${keys.length > maxKeys ? ',…' : ''}}`;
+            const parts = [];
+            for (const k of keys.slice(0, maxKeys)) {
+                const v = data[k];
+                if (v == null) {
+                    parts.push(`${k}:null`);
+                    continue;
+                }
+                if (typeof v === 'string') {
+                    const s = v.trim();
+                    if (s.startsWith('data:image/')) parts.push(`${k}:data-uri(len=${s.length})`);
+                    else if (/^https?:\/\//i.test(s)) parts.push(`${k}:url`);
+                    else if (lookLikeBase64Image(s)) parts.push(`${k}:base64?(len=${s.replace(/\s+/g, '').length})`);
+                    else parts.push(`${k}:string(len=${s.length})`);
+                } else if (Array.isArray(v)) {
+                    parts.push(`${k}:array(len=${v.length})`);
+                } else if (typeof v === 'object') {
+                    parts.push(`${k}:${summarizeResponseShape(v, depth + 1, maxDepth, Math.min(6, maxKeys))}`);
+                } else {
+                    parts.push(`${k}:${typeof v}`);
+                }
+            }
+            if (keys.length > maxKeys) parts.push('…');
+            return `{${parts.join(', ')}}`;
+        }
+        return typeof data;
+    } catch (_) {
+        return typeof data;
     }
 }
 
@@ -1735,82 +2081,371 @@ function buildImageRequestBody(finalPrompt) {
     return body;
 }
 
-function coerceImageRef(value) {
-    if (!value) return null;
+function coerceImageRef(value, seen) {
+    if (value == null) return null;
+
     if (typeof value === 'string') {
         const s = value.trim();
         if (!s) return null;
-        if (s.startsWith('http://') || s.startsWith('https://') || s.startsWith('data:')) {
-            return { url: s, b64: null, dataUri: s.startsWith('data:') ? s : null };
+        const asUrl = makeImageRefFromUrl(s);
+        if (asUrl) return asUrl;
+        if (lookLikeBase64Image(s) || (/^[A-Za-z0-9+/=\s_-]+$/.test(s) && s.replace(/\s+/g, '').length > 64)) {
+            return makeImageRefFromBase64(s);
         }
-        if (/^[A-Za-z0-9+/=\s]+$/.test(s) && s.replace(/\s+/g, '').length > 64) {
-            const clean = s.replace(/\s+/g, '');
-            const dataUri = `data:image/png;base64,${clean}`;
-            return { url: dataUri, b64: clean, dataUri };
-        }
+        // Markdown image or bare URL inside free text
+        const md = s.match(/!\[[^\]]*\]\((https?:\/\/[^)\s]+|data:image\/[a-zA-Z+.-]+;base64,[^)\s]+)\)/);
+        if (md) return makeImageRefFromUrl(md[1]) || makeImageRefFromBase64(md[1]);
+        const bare = s.match(/(https?:\/\/[^\s"'<>]+\.(?:png|jpe?g|webp|gif|bmp|svg)(?:\?[^\s"'<>]*)?)/i);
+        if (bare) return makeImageRefFromUrl(bare[1]);
+        const dataInText = s.match(/(data:image\/[a-zA-Z+.-]+;base64,[A-Za-z0-9+/=\s]+)/);
+        if (dataInText) return makeImageRefFromUrl(dataInText[1].replace(/\s+/g, ''));
         return null;
     }
-    if (typeof value === 'object') {
-        const url = value.url || value.image_url || value.imageUrl || value.href || null;
-        let b64 = value.b64_json || value.b64 || value.base64 || value.image_base64 || null;
-        if (typeof url === 'string' && url.trim()) {
-            const u = url.trim();
-            if (u.startsWith('data:')) return { url: u, b64: null, dataUri: u };
-            return { url: u, b64: null, dataUri: null };
+
+    if (typeof value !== 'object') return null;
+    if (seen) {
+        if (seen.has(value)) return null;
+        seen.add(value);
+    }
+
+    // Already-normalized / raw-image package from fetchJson
+    if (value.__stcigRawImage && (value.dataUri || value.url || value.b64_json)) {
+        if (value.dataUri) return { url: value.dataUri, b64: value.b64_json || null, dataUri: value.dataUri };
+        if (value.b64_json) return makeImageRefFromBase64(value.b64_json, value.contentType);
+        return makeImageRefFromUrl(value.url);
+    }
+
+    // Nested wrappers commonly used by OpenAI-compatible / Gemini gateways
+    const nestedCandidates = [
+        value.image_url,
+        value.imageUrl,
+        value.image_uri,
+        value.imageUri,
+        value.file_url,
+        value.fileUrl,
+        value.media_url,
+        value.mediaUrl,
+        value.output_url,
+        value.outputUrl,
+        value.result_url,
+        value.resultUrl,
+        value.uri,
+        value.href,
+        value.link,
+        value.src,
+    ];
+    for (const c of nestedCandidates) {
+        if (typeof c === 'string') {
+            const hit = makeImageRefFromUrl(c) || (lookLikeBase64Image(c) ? makeImageRefFromBase64(c) : null);
+            if (hit) return hit;
+        } else if (c && typeof c === 'object') {
+            const nestedUrl = pickFirstString(c.url, c.href, c.image_url, c.imageUrl, c.file_url, c.uri, c.src);
+            if (nestedUrl) {
+                const hit = makeImageRefFromUrl(nestedUrl) || makeImageRefFromBase64(nestedUrl);
+                if (hit) return hit;
+            }
+            const nestedB64 = pickFirstString(
+                c.b64_json, c.b64, c.base64, c.image_base64, c.data, c.bytes, c.content,
+            );
+            if (nestedB64) {
+                const hit = makeImageRefFromBase64(nestedB64, c.mime_type || c.mimeType || c.mime || c.content_type);
+                if (hit) return hit;
+            }
         }
-        if (typeof b64 === 'string' && b64.trim()) {
-            b64 = b64.trim();
-            if (b64.startsWith('data:')) return { url: b64, b64: null, dataUri: b64 };
-            const dataUri = `data:image/png;base64,${b64}`;
-            return { url: dataUri, b64, dataUri };
+    }
+
+    const directUrl = pickFirstString(
+        value.url,
+        value.image_url,
+        value.imageUrl,
+        value.file_url,
+        value.fileUrl,
+        value.media_url,
+        value.output_url,
+        value.result_url,
+        value.href,
+        value.link,
+        value.src,
+        value.uri,
+    );
+    if (directUrl) {
+        const hit = makeImageRefFromUrl(directUrl);
+        if (hit) return hit;
+        // Some gateways put base64 into "url"
+        const asB64 = makeImageRefFromBase64(directUrl);
+        if (asB64) return asB64;
+    }
+
+    // Gemini-like inline data
+    const inline = value.inlineData || value.inline_data || value.media || value.mediaData || null;
+    if (inline && typeof inline === 'object') {
+        const b64 = pickFirstString(inline.data, inline.b64_json, inline.base64, inline.image_base64, inline.bytes);
+        if (b64) {
+            const hit = makeImageRefFromBase64(b64, inline.mimeType || inline.mime_type || inline.mime || inline.content_type);
+            if (hit) return hit;
         }
-        if (typeof value.image === 'string') return coerceImageRef(value.image);
+        const u = pickFirstString(inline.url, inline.file_uri, inline.fileUri, inline.uri);
+        if (u) {
+            const hit = makeImageRefFromUrl(u) || makeImageRefFromBase64(u);
+            if (hit) return hit;
+        }
+    }
+
+    const b64 = pickFirstString(
+        value.b64_json,
+        value.b64,
+        value.base64,
+        value.image_base64,
+        value.imageBase64,
+        value.base64_data,
+        value.base64Data,
+        value.image_data,
+        value.imageData,
+        value.data_base64,
+        value.dataBase64,
+        value.encoded_image,
+        value.encodedImage,
+        // Gemini candidates often use .data for base64 payload
+        (typeof value.data === 'string' && lookLikeBase64Image(value.data) ? value.data : null),
+        (typeof value.bytes === 'string' ? value.bytes : null),
+    );
+    if (b64) {
+        const hit = makeImageRefFromBase64(
+            b64,
+            value.mime_type || value.mimeType || value.mime || value.content_type || value.contentType || value.media_type,
+        );
+        if (hit) return hit;
+    }
+
+    // OpenAI chat-style content part: { type:'image_url', image_url:{url} } / { type:'input_image', image_url }
+    if (typeof value.type === 'string') {
+        const t = value.type.toLowerCase();
+        if (t.includes('image') || t.includes('media') || t === 'output_image') {
+            const partUrl = pickFirstString(
+                value.image_url,
+                value.imageUrl,
+                value.url,
+                value.image,
+                value.file_url,
+                value.image_url?.url,
+                value.imageUrl?.url,
+            );
+            if (partUrl) {
+                const hit = makeImageRefFromUrl(partUrl) || makeImageRefFromBase64(partUrl);
+                if (hit) return hit;
+            }
+            const partB64 = pickFirstString(value.b64_json, value.base64, value.data, value.image_base64);
+            if (partB64) {
+                const hit = makeImageRefFromBase64(partB64, value.mime_type || value.mimeType);
+                if (hit) return hit;
+            }
+        }
+    }
+
+    // Common one-level wrappers
+    for (const key of ['image', 'output', 'result', 'content', 'file', 'media', 'prediction', 'artifact', 'message']) {
+        if (value[key] != null && value[key] !== value) {
+            const hit = coerceImageRef(value[key], seen);
+            if (hit) return hit;
+        }
+    }
+
+    return null;
+}
+
+function collectImageBags(data) {
+    const bags = [];
+    const pushArr = (v) => { if (Array.isArray(v) && v.length) bags.push(v); };
+
+    if (Array.isArray(data)) bags.push(data);
+    if (!data || typeof data !== 'object') return bags;
+
+    pushArr(data.data);
+    pushArr(data.images);
+    pushArr(data.image);
+    pushArr(data.output);
+    pushArr(data.outputs);
+    pushArr(data.result);
+    pushArr(data.results);
+    pushArr(data.artifacts);
+    pushArr(data.predictions);
+    pushArr(data.generated_images);
+    pushArr(data.generatedImages);
+    pushArr(data.image_urls);
+    pushArr(data.imageUrls);
+    pushArr(data.files);
+    pushArr(data.media);
+    pushArr(data.items);
+    pushArr(data.choices);
+    pushArr(data.candidates);
+    pushArr(data.data?.data);
+    pushArr(data.data?.images);
+    pushArr(data.data?.output);
+    pushArr(data.result?.data);
+    pushArr(data.output?.data);
+    pushArr(data.response?.data);
+    pushArr(data.response?.images);
+    pushArr(data.candidates);
+    // Gemini generateContent
+    pushArr(data.candidates?.[0]?.content?.parts);
+    pushArr(data.candidates?.[0]?.content?.Parts);
+    // OpenAI responses / chat
+    pushArr(data.choices?.[0]?.message?.content);
+    pushArr(data.choices?.[0]?.content);
+    pushArr(data.output?.[0]?.content);
+    pushArr(data.response?.candidates?.[0]?.content?.parts);
+
+    return bags;
+}
+
+function extractFromChatContent(content) {
+    if (content == null) return null;
+    if (typeof content === 'string') return coerceImageRef(content);
+    if (!Array.isArray(content)) return coerceImageRef(content);
+
+    for (const part of content) {
+        if (part == null) continue;
+        if (typeof part === 'string') {
+            const hit = coerceImageRef(part);
+            if (hit) return hit;
+            continue;
+        }
+        if (typeof part !== 'object') continue;
+
+        // OpenAI vision/image part shapes
+        const hit = coerceImageRef(part);
+        if (hit) return hit;
+
+        // { type:'text', text:'...markdown...' }
+        if (typeof part.text === 'string') {
+            const fromText = coerceImageRef(part.text);
+            if (fromText) return fromText;
+        }
+        if (typeof part.content === 'string') {
+            const fromContent = coerceImageRef(part.content);
+            if (fromContent) return fromContent;
+        }
+    }
+    return null;
+}
+
+function findImageRefDeep(root, { maxNodes = 400 } = {}) {
+    if (root == null) return null;
+    const seen = typeof WeakSet !== 'undefined' ? new WeakSet() : null;
+    const queue = [root];
+    let steps = 0;
+
+    while (queue.length && steps < maxNodes) {
+        const cur = queue.shift();
+        steps += 1;
+        if (cur == null) continue;
+
+        if (typeof cur === 'string' || typeof cur === 'number' || typeof cur === 'boolean') {
+            const hit = coerceImageRef(cur);
+            if (hit) return hit;
+            continue;
+        }
+
+        if (typeof cur !== 'object') continue;
+        if (seen) {
+            if (seen.has(cur)) continue;
+            seen.add(cur);
+        }
+
+        const direct = coerceImageRef(cur, seen);
+        if (direct) return direct;
+
+        if (Array.isArray(cur)) {
+            for (const item of cur) queue.push(item);
+            continue;
+        }
+
+        // Prefer image-ish keys first for faster hits
+        const keys = Object.keys(cur);
+        const rank = (k) => {
+            const s = k.toLowerCase();
+            if (/(b64|base64|image|url|uri|inline|media|file|png|jpeg|webp)/.test(s)) return 0;
+            if (/(data|output|result|content|parts|choices|candidates)/.test(s)) return 1;
+            return 2;
+        };
+        keys.sort((a, b) => rank(a) - rank(b));
+        for (const k of keys) queue.push(cur[k]);
     }
     return null;
 }
 
 function parseImageResponse(data) {
-    if (!data) throw new Error('生图响应为空');
+    if (data == null || data === '') {
+        throw new Error('生图响应为空');
+    }
+
+    // Raw binary image package from fetchJson
+    if (data && typeof data === 'object' && data.__stcigRawImage) {
+        const rawHit = coerceImageRef(data);
+        if (rawHit) return rawHit;
+    }
+
     if (typeof data === 'string') {
         const direct = coerceImageRef(data);
         if (direct) return direct;
     }
 
-    const bags = [];
-    if (Array.isArray(data)) bags.push(data);
-    if (Array.isArray(data?.data)) bags.push(data.data);
-    if (Array.isArray(data?.images)) bags.push(data.images);
-    if (Array.isArray(data?.output)) bags.push(data.output);
-    if (Array.isArray(data?.result)) bags.push(data.result);
-    if (Array.isArray(data?.results)) bags.push(data.results);
-    if (Array.isArray(data?.data?.data)) bags.push(data.data.data);
-
+    // Fast path: common bags
+    const bags = collectImageBags(data);
     for (const list of bags) {
         for (const item of list) {
             const hit = coerceImageRef(item);
             if (hit) return hit;
+            // chat content array parts inside bag item
+            if (item && typeof item === 'object') {
+                const fromContent = extractFromChatContent(item.content)
+                    || extractFromChatContent(item.message?.content)
+                    || extractFromChatContent(item.parts)
+                    || extractFromChatContent(item.delta?.content);
+                if (fromContent) return fromContent;
+            }
         }
     }
 
+    // Top-level aliases
     const topLevel = coerceImageRef(data)
         || coerceImageRef(data?.data)
         || coerceImageRef(data?.image)
+        || coerceImageRef(data?.images)
         || coerceImageRef(data?.output)
-        || coerceImageRef(data?.result);
+        || coerceImageRef(data?.result)
+        || coerceImageRef(data?.results)
+        || coerceImageRef(data?.file_url)
+        || coerceImageRef(data?.image_url)
+        || coerceImageRef(data?.url)
+        || coerceImageRef(data?.b64_json)
+        || coerceImageRef(data?.base64)
+        || coerceImageRef(data?.image_base64);
     if (topLevel) return topLevel;
 
-    const content = data?.choices?.[0]?.message?.content;
-    if (typeof content === 'string') {
-        const md = content.match(/!\[[^\]]*\]\((https?:\/\/[^)\s]+|data:image\/[a-zA-Z+.-]+;base64,[^)\s]+)\)/);
-        if (md) {
-            const u = md[1];
-            return { url: u, b64: null, dataUri: u.startsWith('data:') ? u : null };
-        }
-        const bare = content.match(/(https?:\/\/\S+\.(?:png|jpe?g|webp|gif)(?:\?\S*)?)/i);
-        if (bare) return { url: bare[1], b64: null, dataUri: null };
+    // Chat / Gemini content paths
+    const contentPaths = [
+        data?.choices?.[0]?.message?.content,
+        data?.choices?.[0]?.content,
+        data?.choices?.[0]?.text,
+        data?.choices?.[0]?.message?.images,
+        data?.output_text,
+        data?.candidates?.[0]?.content?.parts,
+        data?.candidates?.[0]?.content,
+        data?.response?.candidates?.[0]?.content?.parts,
+        data?.data?.choices?.[0]?.message?.content,
+    ];
+    for (const content of contentPaths) {
+        const hit = extractFromChatContent(content);
+        if (hit) return hit;
     }
 
-    throw new Error('生图响应中未找到 url 或 b64_json');
+    // Deep fallback for exotic gateway envelopes
+    const deep = findImageRefDeep(data);
+    if (deep) return deep;
+
+    const shape = summarizeResponseShape(data);
+    throw new Error(`生图响应中未找到 url 或 b64_json；响应结构: ${shape}`);
 }
 
 async function callImageApi(finalPrompt) {
@@ -1825,10 +2460,24 @@ async function callImageApi(finalPrompt) {
     log('info', '调用生图 API', { url, model: body.model, size: body.size, n: body.n, base, endpoint });
 
     const data = await fetchJson(url, {
-        headers: authHeaders(key, { 'Content-Type': 'application/json' }),
+        headers: authHeaders(key, {
+            'Content-Type': 'application/json',
+            Accept: 'application/json, image/*, */*',
+        }),
         body,
+        acceptBinaryImage: true,
     });
-    return parseImageResponse(data);
+    try {
+        return parseImageResponse(data);
+    } catch (err) {
+        // Enrich parse errors with a compact shape for user feedback / logs.
+        if (err && err.message && err.message.includes('未找到 url')) {
+            try {
+                log('warn', '生图响应解析失败', summarizeResponseShape(data));
+            } catch (_) { /* ignore */ }
+        }
+        throw err;
+    }
 }
 
 function findLatestAiMessageIndex() {
@@ -2305,6 +2954,7 @@ async function testConnection() {
                 settings.apiModel = models[0];
                 const el = $('stcig_apiModel');
                 if (el) el.value = models[0];
+                syncModelSelectToValue('stcig_apiModel_select', models[0]);
                 saveSettings();
             }
             log('info', `模型列表获取成功（${models.length}）`, { modelsUrl, sample: models.slice(0, 12) });

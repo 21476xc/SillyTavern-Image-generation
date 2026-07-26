@@ -229,9 +229,53 @@ img.stcig-generated-image {
   }
 }
 
+#stcig_settings .stcig-model-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+}
+
+#stcig_settings .stcig-model-picker .stcig-model-select,
+#stcig_settings .stcig-model-picker input[type="text"] {
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  min-height: 36px;
+}
+
+/* Native select is critical on mobile WebView; keep it large and tappable. */
+#stcig_settings .stcig-model-select {
+  appearance: auto;
+  -webkit-appearance: menulist;
+  cursor: pointer;
+  font-size: 16px; /* reduce iOS auto-zoom on focus */
+  line-height: 1.35;
+  padding: 6px 8px;
+}
+
+#stcig_settings .stcig-model-picker input[type="text"] {
+  font-size: 16px;
+  line-height: 1.35;
+  padding: 6px 8px;
+}
+
 #stcig_settings #stcig_model_fetch_hint {
   margin-top: 4px;
   opacity: 0.8;
   font-size: 0.9em;
   line-height: 1.35;
+}
+
+@media (max-width: 720px) {
+  #stcig_settings .stcig-model-picker {
+    gap: 8px;
+  }
+
+  #stcig_settings .stcig-model-select,
+  #stcig_settings .stcig-model-picker input[type="text"] {
+    min-height: 42px;
+    font-size: 16px;
+  }
 }

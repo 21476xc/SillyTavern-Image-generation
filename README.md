@@ -1,7 +1,7 @@
 # ST-Custom-ImageGen
 
 > **找不到插件面板？**
-> 1. 先确认已更新到 **1.1.5+**（1.1.3 有模块语法错误，安装后设置面板不会出现）。
+> 1. 先确认已更新到 **1.1.6+**（1.1.3 有模块语法错误，安装后设置面板不会出现）。
 > 2. 打开 **扩展 → 管理扩展**，找到 `自定义生图 (OpenAI 兼容)` / `SillyTavern-Image-generation`，确认开关为启用，然后硬刷新。
 > 3. 设置面板在扩展设置列表里（和其他第三方扩展一起），不是单独新页面。
 > 4. 手机浏览器可看日志：搜索 `st-custom-imagegen` 或 `Invalid regular expression flags`。
@@ -10,7 +10,7 @@ SillyTavern 第三方扩展：**自定义生图（OpenAI 兼容）**。
 
 在角色扮演过程中，自动或手动调用兼容 OpenAI Images API 的服务生成图片，并插入到对话消息中。支持两种提示词来源模式、SFW 约束、独立提取 API，以及消息级手动重生成。
 
-当前版本：**1.1.5**
+当前版本：**1.1.6**
 
 ---
 
@@ -71,6 +71,13 @@ ST-Custom-ImageGen
 - 控制台 `window.STCustomImageGen.openSettings()`
 
 ---
+
+## 1.1.6 修复
+
+- **手机端模型列表可点选**：新增真正的 `<select>` 下拉，不再只依赖桌面浏览器的 datalist。
+- **独立「获取模型列表」按钮**：可单独刷新模型，不必走完整测试。
+- **生图响应解析增强**：兼容嵌套 `image_url`、chat content parts、Gemini `inlineData`/`inline_data`、多种 base64/url 别名，以及直接返回图片二进制的网关（含错误 Content-Type 时的字节嗅探）。
+- **错误信息更明确**：解析失败时附带响应结构摘要，方便继续排查。
 
 ## 1.1.5 修复
 
